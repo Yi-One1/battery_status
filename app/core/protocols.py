@@ -587,8 +587,10 @@ def _apply_port_link(reading: Reading, cfg: DeviceConfig, infos: list[HidDeviceI
     当设备出现在 ``wireless_port`` 时判为 2.4G；出现在其它端口时判为有线。
     若配了 ``wired_charging``，有线时同时置 ``charging=True``
     （这种手柄插线即由 USB 供电，官方驱动也显示充电图标）。
+
+    协议自己已经判定链路（如 HID++）时，不做覆盖。
     """
-    if not reading.ok:
+    if not reading.ok or reading.link:
         return
     link_cfg = cfg.protocol.get("link")
     if not isinstance(link_cfg, dict) or link_cfg.get("mode") != "port":
@@ -616,10 +618,11 @@ def _apply_port_link(reading: Reading, cfg: DeviceConfig, infos: list[HidDeviceI
 # --------------------------------------------------------------------------- #
 def read_device(cfg: DeviceConfig, infos: list[HidDeviceInfo], used_slots: Optional[set[int]] = None) -> Reading:
     reading = _read_device(cfg, infos, used_slots)
-    # 协议自己知道链路（HID++ 的索引 0xFF 就是有线），不知道的由配置补一句静态声明：
-    # 迈从/漫步者配的是接收器本身，匹配上了就一定是 2.4G，这么说并不算猜。
-    # 飞智这种「接收器和有线手柄共享同一个 USB 实例 ID」的例外，用端口判别，
-    # 优先级高于静态声明；端口判别失败再回退到字符串声明。
+    # 链路判断优先级：
+    #   1) 协议自己知道（HID++ 索引 0xFF 是有线，1~6 是无线）
+    #   2) USB 端口判别（接收器与有线手柄共享 USB 实例 ID 的飞智/迈从类设备）
+    #   3) 配置里的静态声明（迈从/漫步者配的是接收器本身 = wireless）
+    _apply_port_link(reading, cfg, infos)
     if not reading.link:
         link_cfg = cfg.protocol.get("link", "")
         if isinstance(link_cfg, str):
@@ -645,9 +648,7 @@ def _read_device(cfg: DeviceConfig, infos: list[HidDeviceInfo], used_slots: Opti
                 detected = detected or reading
             return sleeping or detected or Reading.fail("未找到可用的 HID++ 接口")
         if name == "xinput":
-            reading = xinput.read_device(cfg.protocol.get("slot", "auto"), used_slots if used_slots is not None else set())
-            _apply_port_link(reading, cfg, infos)
-            return reading
+            return xinput.read_device(cfg.protocol.get("slot", "auto"), used_slots if used_slots is not None else set())
         if name == "hid":
             last = Reading.fail("未检测到设备")
             for info in candidate_infos(infos, cfg)[:4]:
