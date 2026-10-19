@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "version": "1.1.0",
+  "_comment": [
+    "设备配置：新增外设只需在 devices 数组追加一项，无需改代码。",
+    "match            —— 在 HID 设备列表中匹配物理设备（键可省略，省略即不参与过滤）",
+    "  vid / pid      —— USB 厂商号 / 产品号，可写十进制或 0x 十六进制；不确定就先跑 tools/usb_probe.py list",
+    "  product_contains —— 产品名/厂商名包含的任意关键字（不区分大小写）",
+    "  usage_page     —— HID 顶层 Usage Page（罗技 HID++ 接口为 65280 = 0xFF00）",
+    "protocol         —— 读数协议，name 支持 hid / logitech_hidpp / demo",
+    "  hid.init       —— 连接后依次下发的请求报文（十六进制），用于唤醒厂商私有上报",
+    "  hid.parse      —— 厂商报文解析规则：prefix 前缀、mask 掩码、offset 电量字节、scale 系数、charging_byte/bit 充电位",
+    "  logitech_hidpp.device_name_contains —— 通过 HID++ 0x0005 读到的无线设备名关键字",
+    "options          —— demo_level 仅用于演示模式；notes 为维护备注，不参与运行"
+  ],
+  "types": {
+    "mouse": {
+      "label": "鼠标",
+      "color": "#0A84FF",
+      "style": "ring"
+    },
+    "keyboard": {
+      "label": "键盘",
+      "color": "#7C5CFF",
+      "style": "ring"
+    },
+    "gamepad": {
+      "label": "手柄",
+      "color": "#FF9F0A",
+      "style": "ring"
+    },
+    "headset": {
+      "label": "耳机",
+      "color": "#2FC48A",
+      "style": "ring"
+    }
+  },
+  "devices": [
+    {
+      "id": "logitech-gpx-superlight",
+      "type": "mouse",
+      "display_name": "罗技 GPW2",
+      "subtitle": "PRO X SUPERLIGHT",
+      "enabled": true,
+      "match": {
+        "vid": 1133,
+        "product_contains": [
+          "receiver"
+        ]
+      },
+      "protocol": {
+        "name": "logitech_hidpp",
+        "device_name_contains": [
+          "superlight",
+          "pro x",
+          "g pro"
+        ],
+        "device_index": "auto"
+      },
+      "options": {
+        "demo_level": 87
+      },
+      "notes": "实测：C547 接收器 20 字节接口必须用长报文 0x11，鼠标在设备索引 1，新固件只有 0x1004 统一电量（feature index 6），fn1 返回 [电量%, 状态, 充电类型]。鼠标休眠时无应答，属正常现象。"
+    },
+    {
+      "id": "flydigi-apex4",
+      "type": "gamepad",
+      "display_name": "飞智 冰原狼 4",
+      "subtitle": "FLYDIGI DIREWOLF 4",
+      "enabled": true,
+      "match": {
+        "vid": 1118,
+        "product_contains": [
+          "flydigi",
+          "direwolf",
+          "apex",
+          "冰原狼",
+          "飞智"
+        ]
+      },
+      "protocol": {
+        "name": "xinput",
+        "slot": "auto"
+      },
+      "options": {
+        "demo_level": 76
+      },
+      "notes": "实测：2.4G/有线下呈现为 Xbox 兼容手柄（045E:028E）。XInputGetBatteryInformation 只能给四档电量（5/25/60/100），有线供电时固定报满。需要精确百分比请切到厂商模式抓包后用 hid 协议。"
+    },
+    {
+      "id": "mchose-g98pro",
+      "type": "keyboard",
+      "display_name": "迈从 G98 PRO",
+      "subtitle": "MCHOSE G98 PRO",
+      "enabled": true,
+      "match": {
+        "vid": 9610,
+        "pid": 443,
+        "product_contains": [
+          "2.4g wireless receiver",
+          "mchose",
+          "迈从",
+          "g98"
+        ]
+      },
+      "protocol": {
+        "name": "hid",
+        "prefer": "auto",
+        "init": [],
+        "parse": null
+      },
+      "options": {
+        "demo_level": 64
+      },
+      "notes": "SINOWEALTH(258A:01BB) 2.4G 双模接收器，暴露 KBD/Consumer/鼠标 与 0xFF00-0xFF02 厂商接口。标准电量页为空，需要在厂商接口上抓包后配置 parse（多数方案是查询报文 + 电量字节）。"
+    },
+    {
+      "id": "edifier-g3max",
+      "type": "headset",
+      "display_name": "漫步者 G3 MAX",
+      "subtitle": "HECATE G3 MAX",
+      "enabled": true,
+      "match": {
+        "vid": 13755,
+        "product_contains": [
+          "hecate",
+          "g3 max",
+          "edifier",
+          "漫步者"
+        ]
+      },
+      "protocol": {
+        "name": "hid",
+        "prefer": "auto",
+        "init": [],
+        "parse": null
+      },
+      "options": {
+        "demo_level": 92
+      },
+      "notes": "Jieli(35BB:A226) 2.4G 音频 dongle，厂商接口 0xFF02 输入报文 64 字节。耳机通常在状态变化或收到查询后上报电量，抓包后填 parse。"
+    }
+  ]
+}

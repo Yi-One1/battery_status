@@ -1,0 +1,22 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# ---- 打包产物 ----
+build/
+dist/
+*.spec
+
+# ---- 工具本地状态 ----
+.workbuddy/
+
+# ---- 截图临时文件（正式预览图 preview/*.png 需要入库）----
+preview/tmp_*
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

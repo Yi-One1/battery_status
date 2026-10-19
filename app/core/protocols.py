@@ -1,0 +1,434 @@
+"""读数协议层。
+
+统一返回 Reading，监测线程与 UI 不需要知道设备怎么说话：
+  * logitech_hidpp —— HID++ 2.0（Lightspeed / Unifying 接收器，也兼容有线模式）
+  * hid            —— 标准 HID Battery Strength，回退到配置驱动的厂商报文解析
+  * xinput         —— Xbox 兼容手柄的四档电量（Windows 原生 API）
+  * demo           —— 演示数据
+
+实测要点（罗技 GPW2 + C547 接收器）：
+  * 20 字节接口必须用长报文 0x11，7 字节接口用短报文 0x10，混用会被系统直接拒绝
+  * 新固件只有 0x1004 UNIFIED_BATTERY（feature index 6），没有 0x1000/0x1001
+  * fn1 getStatus 返回 [电量%, 电量状态, 充电类型, 外部供电]，充电类型 0 = 放电
+"""
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass
+from typing import Any, Literal, Optional
+
+from . import xinput
+from .config import DeviceConfig, DeviceRegistry
+from .hidapi_io import HidDeviceInfo, HidHandle, sort_preferred
+from .hidnative import device_caps, read_battery_strength
+from .model import Reading
+
+log = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# 罗技 HID++ 2.0
+# --------------------------------------------------------------------------- #
+HIDPP_SHORT_REPORT_ID = 0x10
+HIDPP_LONG_REPORT_ID = 0x11
+SHORT_MESSAGE_SIZE = 7
+LONG_MESSAGE_SIZE = 20
+
+FEATURE_ROOT = 0x0000
+FEATURE_FW_VERSION = 0x0003
+FEATURE_DEVICE_NAME = 0x0005
+FEATURE_BATTERY_STATUS = 0x1000
+FEATURE_BATTERY_VOLTAGE = 0x1001
+FEATURE_UNIFIED_BATTERY = 0x1004
+
+# 锂电池电压 -> 百分比（罗技 dongle 常用的估算曲线，线性插值）
+_VOLTAGE_TABLE: tuple[tuple[int, int], ...] = (
+    (4186, 100), (4067, 90), (3989, 80), (3922, 70), (3859, 60),
+    (3811, 50), (3778, 40), (3751, 30), (3723, 20), (3671, 10),
+    (3646, 5), (3579, 2), (3503, 0),
+)
+
+
+def voltage_to_percent(millivolts: int) -> int:
+    if millivolts >= _VOLTAGE_TABLE[0][0]:
+        return 100
+    if millivolts <= _VOLTAGE_TABLE[-1][0]:
+        return 0
+    for (hi_mv, hi_pct), (lo_mv, lo_pct) in zip(_VOLTAGE_TABLE, _VOLTAGE_TABLE[1:]):
+        if lo_mv <= millivolts <= hi_mv:
+            span = hi_mv - lo_mv
+            ratio = (millivolts - lo_mv) / span if span else 0.0
+            return int(round(lo_pct + ratio * (hi_pct - lo_pct)))
+    return 0
+
+
+class HidppError(Exception):
+    """设备返回错误应答。code=0x08 表示该索引上没有配对设备。"""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(f"HID++ error 0x{code:02X}")
+        self.code = code
+
+
+class HidppTimeout(Exception):
+    """请求已发出但无应答 —— 设备休眠或未唤醒。"""
+
+
+class HidppSession:
+    """一条 HID++ 通道。message_size 由接口的输入报告长度决定。"""
+
+    def __init__(self, handle: HidHandle, message_size: int = SHORT_MESSAGE_SIZE) -> None:
+        self.handle = handle
+        self.message_size = LONG_MESSAGE_SIZE if message_size >= LONG_MESSAGE_SIZE else SHORT_MESSAGE_SIZE
+        self._sw_id = 0
+        self._features: dict[tuple[int, int], int] = {}
+
+    def _next_sw(self) -> int:
+        self._sw_id = self._sw_id % 14 + 1
+        return self._sw_id
+
+    def request(
+        self,
+        device_index: int,
+        feature_index: int,
+        function: int,
+        params: bytes = b"",
+        *,
+        timeout_ms: int = 260,
+    ) -> bytes:
+        sw_id = self._next_sw()
+        report_id = HIDPP_LONG_REPORT_ID if self.message_size == LONG_MESSAGE_SIZE else HIDPP_SHORT_REPORT_ID
+        frame = bytearray([report_id, device_index, feature_index, (function << 4) | sw_id])
+        frame.extend(params)
+        if len(frame) < self.message_size:
+            frame.extend(b"\x00" * (self.message_size - len(frame)))
+        if self.handle.write(bytes(frame[: self.message_size])) < 0:
+            raise HidppTimeout("写入被拒绝（接口可能被其他程序独占）")
+
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while time.monotonic() < deadline:
+            data = self.handle.read(self.message_size, 40)
+            if not data or len(data) < 7:
+                continue
+            if data[1] != device_index or (data[3] & 0x0F) != sw_id:
+                continue
+            if data[2] & 0x80:
+                raise HidppError(data[4] if len(data) > 4 else 0xFF)
+            if data[2] == feature_index and (data[3] >> 4) == function:
+                return bytes(data)
+        raise HidppTimeout("无应答")
+
+    def get_feature(self, device_index: int, feature_id: int) -> int:
+        key = (device_index, feature_id)
+        if key in self._features:
+            return self._features[key]
+        try:
+            reply = self.request(device_index, FEATURE_ROOT, 0x00, bytes([feature_id >> 8, feature_id & 0xFF]))
+            index = reply[4] if len(reply) > 4 else 0
+        except HidppError:
+            index = 0
+        self._features[key] = index
+        return index
+
+    def device_name(self, device_index: int) -> str:
+        index = self.get_feature(device_index, FEATURE_DEVICE_NAME)
+        if not index:
+            return ""
+        try:
+            # 0x0005 fn0 返回分片数，fn1 返回第 index 片；取首片足够区分设备型号
+            self.request(device_index, index, 0x00)
+            chunk = self.request(device_index, index, 0x01, bytes([0]))
+            return chunk[4:20].split(b"\x00")[0].decode("utf-8", "ignore").strip()
+        except (HidppError, HidppTimeout):
+            return ""
+
+    def state_of(self, device_index: int) -> Literal["present", "absent", "asleep"]:
+        try:
+            self.request(device_index, FEATURE_ROOT, 0x00, bytes([0x00, FEATURE_FW_VERSION]), timeout_ms=220)
+            return "present"
+        except HidppError as exc:
+            return "absent" if exc.code == 0x08 else "present"
+        except HidppTimeout:
+            return "asleep"
+
+    def read_battery(self, device_index: int) -> Reading:
+        # ① UNIFIED_BATTERY（新固件首选）
+        index = self.get_feature(device_index, FEATURE_UNIFIED_BATTERY)
+        if index:
+            try:
+                reply = self.request(device_index, index, 0x01)
+                if len(reply) >= 7 and reply[4] <= 100:
+                    level = int(reply[4])
+                    charging_type = reply[6] if len(reply) > 6 else 0
+                    external = reply[7] if len(reply) > 7 else 0
+                    charging = charging_type != 0 or external not in (0, 0xFF)
+                    return Reading(
+                        level=level,
+                        charging=charging,
+                        source="hidpp",
+                        ok=True,
+                        detail=f"HID++ 0x1004 · 状态 0x{reply[5]:02X} 充电类型 {charging_type}",
+                    )
+            except (HidppError, HidppTimeout):
+                pass
+
+        # ② BATTERY_STATUS（老固件）
+        index = self.get_feature(device_index, FEATURE_BATTERY_STATUS)
+        if index:
+            try:
+                reply = self.request(device_index, index, 0x00)
+                if len(reply) >= 7 and reply[4] <= 100:
+                    status = reply[6]
+                    return Reading(
+                        level=int(reply[4]),
+                        charging=bool(status & 0x06),
+                        source="hidpp",
+                        ok=True,
+                        detail=f"HID++ 0x1000 · 状态 0x{status:02X}",
+                    )
+            except (HidppError, HidppTimeout):
+                pass
+
+        # ③ BATTERY_VOLTAGE（毫伏换算）
+        index = self.get_feature(device_index, FEATURE_BATTERY_VOLTAGE)
+        if index:
+            try:
+                reply = self.request(device_index, index, 0x00)
+                if len(reply) >= 7:
+                    millivolts = (reply[4] << 8) | reply[5]
+                    if 2500 <= millivolts <= 5000:
+                        return Reading(
+                            level=voltage_to_percent(millivolts),
+                            charging=bool(reply[6] & 0x80),
+                            source="hidpp",
+                            ok=True,
+                            detail=f"HID++ 0x1001 · {millivolts} mV",
+                        )
+            except (HidppError, HidppTimeout):
+                pass
+        return Reading.fail("HID++ 设备未返回电量")
+
+
+@dataclass
+class HidppDevice:
+    index: int
+    name: str
+    wired: bool = False
+
+
+@dataclass
+class HidppProbe:
+    devices: list[HidppDevice]
+    asleep: bool = False
+
+
+# 接收器发现结果缓存：path -> (时间戳, 结果)，避免每轮都做全索引试探
+_HIDPP_CACHE: dict[str, tuple[float, HidppProbe]] = {}
+_HIDPP_CACHE_TTL = 300.0
+
+
+def hidpp_probe(session: HidppSession, path: bytes, force: bool = False) -> HidppProbe:
+    key = path.decode("utf-8", "ignore")
+    now = time.monotonic()
+    cached = _HIDPP_CACHE.get(key)
+    if cached and not force and now - cached[0] < _HIDPP_CACHE_TTL:
+        return cached[1]
+
+    devices: list[HidppDevice] = []
+    asleep = False
+    for index in (1, 2, 3, 4, 5, 6):
+        state = session.state_of(index)
+        if state == "asleep":
+            asleep = True
+        elif state == "present":
+            devices.append(HidppDevice(index=index, name=session.device_name(index)))
+
+    if not devices and not asleep:
+        # 有线模式：HID++ 通道本身可能就是设备（索引 0xFF），必须自带电量特性
+        has_battery = bool(
+            session.get_feature(0xFF, FEATURE_UNIFIED_BATTERY) or session.get_feature(0xFF, FEATURE_BATTERY_STATUS)
+        )
+        if has_battery:
+            devices.append(HidppDevice(index=0xFF, name=session.device_name(0xFF), wired=True))
+
+    probe = HidppProbe(devices=devices, asleep=asleep and not devices)
+    if devices:
+        _HIDPP_CACHE[key] = (now, probe)
+    else:
+        _HIDPP_CACHE.pop(key, None)
+    return probe
+
+
+def read_logitech(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
+    proto = cfg.protocol
+    keywords = [str(x).lower() for x in (proto.get("device_name_contains") or [])]
+    forced_index = proto.get("device_index")
+
+    caps = device_caps(info.path)
+    message_size = LONG_MESSAGE_SIZE if caps and caps.input_length >= LONG_MESSAGE_SIZE else SHORT_MESSAGE_SIZE
+
+    with HidHandle(info) as handle:
+        if not handle.is_open:
+            return Reading.fail("接口被占用或设备已拔出（可能被 G HUB 独占）")
+        session = HidppSession(handle, message_size)
+        probe = hidpp_probe(session, info.path)
+        if not probe.devices:
+            if probe.asleep:
+                return Reading.fail("设备休眠中，动一下鼠标即可刷新", sleeping=True)
+            return Reading(detail="接收器上未发现配对设备", detected=True)
+
+        target: Optional[HidppDevice] = None
+        if isinstance(forced_index, int):
+            target = next((d for d in probe.devices if d.index == forced_index), None)
+        if target is None and keywords:
+            target = next((d for d in probe.devices if any(k in d.name.lower() for k in keywords)), None)
+        if target is None and len(probe.devices) == 1:
+            target = probe.devices[0]
+        if target is None:
+            names = " / ".join(d.name or f"idx{d.index}" for d in probe.devices)
+            return Reading.fail(f"接收器带多台设备：{names}")
+
+        reading = session.read_battery(target.index)
+        if not reading.ok:
+            _HIDPP_CACHE.pop(info.path.decode("utf-8", "ignore"), None)
+        if target.name:
+            reading.detail = f"{target.name} · {reading.detail}" if reading.ok else reading.detail
+        return reading
+
+
+# --------------------------------------------------------------------------- #
+# 通用 HID 设备（标准电量页 / 厂商报文）
+# --------------------------------------------------------------------------- #
+def _match_rule(data: bytes, prefix: str, mask: str) -> bool:
+    try:
+        prefix_bytes = bytes.fromhex(prefix) if prefix else b""
+        mask_bytes = bytes.fromhex(mask) if mask else b""
+    except ValueError:
+        return False
+    if not prefix_bytes:
+        return True
+    if len(data) < len(prefix_bytes):
+        return False
+    for index, expected in enumerate(prefix_bytes):
+        mask_byte = mask_bytes[index] if index < len(mask_bytes) else 0xFF
+        if (data[index] & mask_byte) != (expected & mask_byte):
+            return False
+    return True
+
+
+def _extract_level(data: bytes, rule: dict[str, Any]) -> Optional[int]:
+    offset = int(rule.get("offset", -1))
+    if offset < 0 or offset >= len(data):
+        return None
+    raw = data[offset]
+    bit = rule.get("bit")
+    if isinstance(bit, int) and 0 <= bit <= 7:
+        raw = (raw >> bit) & 0x01
+    value = raw * float(rule.get("scale", 1) or 1)
+    if rule.get("invert"):
+        value = 100 - value
+    return max(0, min(100, int(round(value))))
+
+
+def _extract_charging(data: bytes, rule: dict[str, Any]) -> Optional[bool]:
+    byte_index = rule.get("charging_byte")
+    bit_index = rule.get("charging_bit", 0)
+    if not isinstance(byte_index, int) or byte_index < 0 or byte_index >= len(data):
+        return None
+    if not isinstance(bit_index, int):
+        return None
+    return bool((data[byte_index] >> bit_index) & 0x01)
+
+
+def read_generic_hid(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
+    proto = cfg.protocol
+    rule = proto.get("parse") or {}
+    init_packets = [str(p) for p in (proto.get("init") or [])]
+
+    with HidHandle(info) as handle:
+        if not handle.is_open:
+            return Reading.fail("设备被占用或已拔出")
+
+        # ① 标准电量页
+        for _ in range(3):
+            report = handle.read(64, 120)
+            if not report:
+                continue
+            level = read_battery_strength(info.path, report)
+            if level is not None:
+                return Reading(
+                    level=level,
+                    charging=None,
+                    source="hid-battery",
+                    ok=True,
+                    detail=f"HID 电量页 · {len(report)}B 报文",
+                )
+
+        if not rule:
+            return Reading(
+                detail="该 dongle 不暴露标准电量页，需在 devices.json 配置厂商报文规则（见 README 的接入流程）",
+                detected=True,
+            )
+
+        # ② 厂商私有报文
+        handle.drain()
+        for packet in init_packets:
+            try:
+                handle.write(bytes.fromhex(packet))
+            except ValueError:
+                log.warning("非法 init 报文：%s", packet)
+                continue
+            time.sleep(0.02)
+
+        deadline = time.monotonic() + 0.6
+        while time.monotonic() < deadline:
+            data = handle.read(64, 120)
+            if not data or not _match_rule(data, str(rule.get("prefix", "")), str(rule.get("mask", ""))):
+                continue
+            level = _extract_level(data, rule)
+            if level is None:
+                continue
+            return Reading(
+                level=level,
+                charging=_extract_charging(data, rule),
+                source="vendor",
+                ok=True,
+                detail=f"厂商报文 {data[:6].hex(' ').upper()}",
+            )
+        return Reading(detail="未捕获到电量报文", detected=True)
+
+
+# --------------------------------------------------------------------------- #
+# 统一入口
+# --------------------------------------------------------------------------- #
+def read_device(cfg: DeviceConfig, infos: list[HidDeviceInfo], used_slots: Optional[set[int]] = None) -> Reading:
+    try:
+        name = cfg.protocol_name
+        if name == "logitech_hidpp":
+            for info in candidate_infos(infos, cfg)[:4]:
+                reading = read_logitech(cfg, info)
+                if reading.ok:
+                    return reading
+                if reading.sleeping:
+                    return reading
+            return Reading.fail("未找到可用的 HID++ 接口")
+        if name == "xinput":
+            return xinput.read_device(cfg.protocol.get("slot", "auto"), used_slots if used_slots is not None else set())
+        if name == "hid":
+            last = Reading.fail("未检测到设备")
+            for info in candidate_infos(infos, cfg)[:4]:
+                reading = read_generic_hid(cfg, info)
+                if reading.ok:
+                    return reading
+                last = reading
+            return last
+        return Reading.fail(f"未知协议 {name}")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("读取 %s 失败：%s", cfg.id, exc)
+        return Reading.fail(f"读取异常：{exc}")
+
+
+def candidate_infos(infos: list[HidDeviceInfo], cfg: DeviceConfig) -> list[HidDeviceInfo]:
+    matched = [info for info in infos if DeviceRegistry.matches(info, cfg.match)]
+    return sort_preferred(matched)
