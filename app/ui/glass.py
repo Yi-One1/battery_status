@@ -27,6 +27,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QPolygonF,
     QRadialGradient,
 )
 from PySide6.QtWidgets import (
@@ -57,6 +58,40 @@ def noise_pixmap() -> QPixmap:
             image.setPixelColor(x, y, QColor(255, 255, 255, alpha))
     _NOISE = QPixmap.fromImage(image)
     return _NOISE
+
+
+def paint_refresh_icon(painter: QPainter, center: QPointF, radius: float, color: QColor) -> None:
+    """画一个标准刷新图标：闭合感强的圆弧 + 贴在末端的切线箭头。
+
+    几何要点（这是之前图标看起来"不圆"的根因）：
+    - 缺口固定 45°，位于右上（37.5°~82.5°），弧覆盖其余 315°，视觉上是完整圆环；
+    - 箭头三角按弧末端的切线方向摆放，底边跨在弧线上，而不是另外画两条短线；
+    - 箭头长度、宽度与线宽成比例，缩放到 16px 也不会糊成一团。
+    """
+    start, span = 32.5, -305.0
+    rect = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
+    arc = QPainterPath()
+    arc.arcMoveTo(rect, start)
+    arc.arcTo(rect, start, span)
+    painter.drawPath(arc)
+
+    end = math.radians(start + span)
+    ex, ey = math.cos(end), -math.sin(end)
+    point = QPointF(center.x() + radius * ex, center.y() + radius * ey)
+    # 顺时针旋转的切线方向
+    tx, ty = math.cos(end - math.pi / 2), -math.sin(end - math.pi / 2)
+    length = radius * 0.50
+    half = radius * 0.16
+    base = QPointF(point.x() - tx * length * 0.12, point.y() - ty * length * 0.12)
+    tip = QPointF(point.x() + tx * length, point.y() + ty * length)
+    wing_a = QPointF(base.x() + ex * half, base.y() + ey * half)
+    wing_b = QPointF(base.x() - ex * half, base.y() - ey * half)
+
+    painter.save()
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    painter.drawPolygon(QPolygonF([tip, wing_a, wing_b]))
+    painter.restore()
 
 
 def rounded_path(rect: QRectF, radius: float) -> QPainterPath:
@@ -204,6 +239,8 @@ class IconButton(QAbstractButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(diameter, diameter)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        # 按钮浮在玻璃上，自身不能刷不透明底色
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
     def enterEvent(self, event) -> None:  # noqa: N802
         self._hover = True
@@ -236,13 +273,7 @@ class IconButton(QAbstractButton):
         r = rect.width() / 2
         s = r * 0.42
         if self.kind == "refresh":
-            path = QPainterPath()
-            path.arcMoveTo(QRectF(c.x() - s, c.y() - s, s * 2, s * 2), 60)
-            path.arcTo(QRectF(c.x() - s, c.y() - s, s * 2, s * 2), 60, 285)
-            painter.drawPath(path)
-            tip = QPointF(c.x() + s * 0.98, c.y() - s * 0.62)
-            painter.drawLine(tip, QPointF(tip.x() - s * 0.52, tip.y() - s * 0.06))
-            painter.drawLine(tip, QPointF(tip.x() + s * 0.02, tip.y() + s * 0.48))
+            paint_refresh_icon(painter, c, r * 0.63, QColor(pen.color()))
         elif self.kind in ("gear", "sliders"):
             # 三根滑杆，比齿轮更清爽，也更像系统设置图标
             for slot, knob in ((-0.62, 0.42), (0.0, -0.4), (0.62, 0.18)):

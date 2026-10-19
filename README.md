@@ -240,6 +240,18 @@ run.bat
 用户配置与日志在 `%APPDATA%\BatteryGlass\`（`preferences.json` / `devices.json` / `app.log`）。
 卸载直接删目录即可，自启动项在设置里关掉或从任务管理器「启动应用」里禁用。
 
+### 测试
+
+```bat
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.venv\Scripts\python.exe -m pytest
+```
+
+- UI 测试跑在离屏 Qt（`QT_QPA_PLATFORM=offscreen`）上，不弹窗、不抢焦点，可直接在 CI 里跑。
+- 图标测试不是截图比对，而是测量外轮廓的径向分布：弧半径缩水、缺口跑位、箭头飞出圆外都会立刻失败。
+- 单独跑某一组：`.venv\Scripts\python.exe -m pytest tests/test_ui_icons.py -v`
+
+
 ---
 
 ## 七、已知限制
