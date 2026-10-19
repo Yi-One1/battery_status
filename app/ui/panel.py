@@ -25,7 +25,7 @@ from ..core.model import Snapshot
 from ..core.monitor import Monitor
 from ..core.paths import resource_root
 from ..core.presence import filter_visible, hidden_devices
-from . import theme, winblur
+from . import theme
 from .backdrop import capture_screen
 from .cards import DeviceCard
 from .glass import GlassSurface, IconButton, apply_shadow, clear_backdrop, paint_glass, set_backdrop
@@ -40,6 +40,13 @@ HEADER_HEIGHT = 58
 # 面板显示期间重取桌面底图的间隔。取整屏 + 1/8 缩放约 20~30 ms，
 # 15 秒一次摊下来对 CPU 的影响可以忽略，但换壁纸能在一刻钟内跟上。
 BACKDROP_REFRESH_MS = 15_000
+# 外壳的不透明度：取到桌面底图时让壁纸透上来；取不到就用实一点的静态玻璃
+SHELL_ALPHA_WITH_BACKDROP = 0.74
+SHELL_ALPHA_STATIC = 0.86
+
+
+def shell_alpha(has_backdrop: bool) -> float:
+    return SHELL_ALPHA_WITH_BACKDROP if has_backdrop else SHELL_ALPHA_STATIC
 FOOTER_HEIGHT = 42
 CARD_HEIGHT = 152
 CARD_GAP = 12
@@ -50,7 +57,7 @@ class _Shell(GlassSurface):
     """窗体内层：整块大圆角玻璃。"""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent, radius=30, alpha=0.74)
+        super().__init__(parent, radius=30, alpha=SHELL_ALPHA_WITH_BACKDROP)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -402,17 +409,12 @@ class Panel(QWidget):
         super().hideEvent(event)
 
     def _apply_window_blur(self) -> None:
-        hwnd = int(self.winId())
-        if self._has_backdrop:
-            # 自己已经截屏模糊过了，再叠 DWM 模糊会糊成一片
-            winblur.clear_acrylic(hwnd)
-            self.shell.base_alpha = 0.74
-        elif self.store.prefs.glass_blur:
-            ok = winblur.apply_acrylic(hwnd, tint="#F7F8FC", alpha=0x7A)
-            self.shell.base_alpha = 0.48 if ok else 0.86
-        else:
-            winblur.clear_acrylic(hwnd)
-            self.shell.base_alpha = 0.86
+        """只有"有没有取到桌面底图"这一件事要决：取到了就让壁纸透上来，没取到就用实一点的静态玻璃。
+
+        以前这里还有一条 DWM Acrylic 分支（设置里的「真实毛玻璃」），但自从底图改成整屏取样之后，
+        那条分支只在"截不到屏幕"时才会走到，开关按下去永远不会变 —— 已经删掉了。
+        """
+        self.shell.base_alpha = shell_alpha(self._has_backdrop)
         self.shell.update()
 
     # ------------------------------------------------------------- 设备热插拔

@@ -197,11 +197,6 @@ class SettingsPane(QWidget):
         self.minimized_toggle.toggled.connect(self._on_start_minimized)
         column.addWidget(SettingRow("启动后直接进托盘", "不弹出面板，保持后台静默", self.minimized_toggle))
 
-        self.blur_toggle = ToggleSwitch()
-        self.blur_toggle.setChecked(store.prefs.glass_blur)
-        self.blur_toggle.toggled.connect(self._on_blur)
-        column.addWidget(SettingRow("真实毛玻璃", "调用 DWM 模糊桌面背景，个别显卡驱动会有拖影", self.blur_toggle))
-
         self.demo_toggle = ToggleSwitch()
         self.demo_toggle.setChecked(store.prefs.demo)
         self.demo_toggle.toggled.connect(self._on_demo)
@@ -514,10 +509,6 @@ class SettingsPane(QWidget):
 
     def _on_start_minimized(self, checked: bool) -> None:
         self.store.prefs.start_minimized = checked
-        self._commit()
-
-    def _on_blur(self, checked: bool) -> None:
-        self.store.prefs.glass_blur = checked
         self._commit()
 
     def _on_demo(self, checked: bool) -> None:

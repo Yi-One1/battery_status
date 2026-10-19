@@ -387,7 +387,6 @@ class Preferences:
     start_minimized: bool = True
     low_battery_threshold: int = 20
     notifications: bool = True
-    glass_blur: bool = False
     demo: bool = False
     # 设备自动管理（问题3）
     auto_add: bool = True
