@@ -112,7 +112,7 @@
       "options": {
         "demo_level": 64
       },
-      "notes": "SINOWEALTH(258A:01BB) 2.4G 双模接收器，暴露 KBD/Consumer/鼠标 与 0xFF00-0xFF02 厂商接口。标准电量页为空，需要在厂商接口上抓包后配置 parse（多数方案是查询报文 + 电量字节）。"
+      "notes": "SINOWEALTH(258A:01BB) 2.4G 接收器。标准电量页为空；0xFF00 的 6 字节 feature 通道只有 0x05=版本字符串用，0xFF02 的 20 字节通道对 D0/13 系命令均无应答。M HUB 驱动把 HID 通信放在 Chromium 沙箱进程内，常规注入拿不到报文，需用 tools/hid_trace.py 在驱动启动瞬间追踪（见 README）。"
     },
     {
       "id": "edifier-g3max",
@@ -130,15 +130,20 @@
         ]
       },
       "protocol": {
-        "name": "hid",
-        "prefer": "auto",
-        "init": [],
-        "parse": null
+        "name": "vendor_query",
+        "command": "D0 {vid_be} 01 00",
+        "report_length": 64,
+        "reply_prefix": "D0 {vid_be}",
+        "reply_code_offset": 3,
+        "reply_code": 10,
+        "level_offset": 6,
+        "timeout_ms": 300,
+        "retries": 1
       },
       "options": {
         "demo_level": 92
       },
-      "notes": "Jieli(35BB:A226) 2.4G 音频 dongle，厂商接口 0xFF02 输入报文 64 字节。耳机通常在状态变化或收到查询后上报电量，抓包后填 parse。"
+      "notes": "实测（2026-10-20，Frida 追踪 HECATE.exe）：0xFF02 接口 64 字节通道，写 D0 35 BB 01 00 → 收 D0 35 BB 0A 00 01 30 00，第 6 字节 0x30=48%，与驱动标题栏 48% 完全一致。共 3 个相同接口，只有第一个响应。"
     }
   ]
 }

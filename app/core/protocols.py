@@ -400,6 +400,113 @@ def read_generic_hid(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
 
 
 # --------------------------------------------------------------------------- #
+# 主动查询式厂商协议（配置驱动）
+# --------------------------------------------------------------------------- #
+# 实测（漫步者 G3 MAX，35BB:A226，杰理 2.4G dongle）：
+#   写 D0 35 BB 01 00（64 字节，其余补 0）
+#   收 D0 35 BB 0A 00 01 30 00 … → 第 6 字节 0x30 = 48%，与驱动界面完全一致
+# 这类通道不主动上报，必须"问一句答一句"，所以和 read_generic_hid 的被动监听是两条路。
+def render_hex_template(template: str, info: HidDeviceInfo) -> bytes:
+    """把命令模板里的 {vid_le} / {pid_le} 等占位符换成真实字节。"""
+    text = str(template or "")
+    text = text.replace("{vid_be}", f"{info.vid >> 8:02X} {info.vid & 0xFF:02X}")
+    text = text.replace("{vid_le}", f"{info.vid & 0xFF:02X} {info.vid >> 8:02X}")
+    text = text.replace("{pid_be}", f"{info.pid >> 8:02X} {info.pid & 0xFF:02X}")
+    text = text.replace("{pid_le}", f"{info.pid & 0xFF:02X} {info.pid >> 8:02X}")
+    text = text.replace("{vid}", f"{info.vid:04X}")
+    text = text.replace("{pid}", f"{info.pid:04X}")
+    if not text.strip():
+        return b""
+    return bytes.fromhex(text)
+
+
+def build_vendor_command(template: str, info: HidDeviceInfo, length: int) -> bytes:
+    """按接口报告长度构造命令：不足补 0，超长截断。"""
+    payload = render_hex_template(template, info)
+    if length <= 0:
+        return payload
+    if len(payload) >= length:
+        return payload[:length]
+    return payload + b"\x00" * (length - len(payload))
+
+
+def parse_vendor_reply(
+    data: bytes,
+    *,
+    prefix: bytes = b"",
+    code_offset: Optional[int] = None,
+    code_value: Optional[int] = None,
+    level_offset: int = -1,
+    charging_byte: Optional[int] = None,
+    charging_bit: int = 0,
+) -> Optional[tuple[int, Optional[bool]]]:
+    """从应答报文里取出 (电量, 是否充电)；不匹配或越界返回 None。"""
+    if level_offset < 0 or level_offset >= len(data):
+        return None
+    if prefix:
+        if len(data) < len(prefix) or data[: len(prefix)] != prefix:
+            return None
+    if code_offset is not None and code_value is not None:
+        if code_offset < 0 or code_offset >= len(data) or data[int(code_offset)] != int(code_value):
+            return None
+    level = data[level_offset]
+    if not 0 <= level <= 100:
+        return None
+    charging: Optional[bool] = None
+    if isinstance(charging_byte, int) and 0 <= charging_byte < len(data):
+        charging = bool((data[charging_byte] >> charging_bit) & 0x01)
+    return level, charging
+
+
+def read_vendor_query(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
+    proto = cfg.protocol
+    caps = device_caps(info.path)
+    length = int(proto.get("report_length") or (caps.input_length if caps else 64))
+    if length <= 0:
+        return Reading.fail("接口报告长度未知")
+
+    command = build_vendor_command(str(proto.get("command", "")), info, length)
+    prefix = render_hex_template(str(proto.get("reply_prefix", "")), info)
+    timeout_ms = int(proto.get("timeout_ms", 300))
+    retries = int(proto.get("retries", 1))
+
+    with HidHandle(info) as handle:
+        if not handle.is_open:
+            return Reading.fail("设备被占用或已拔出")
+        for attempt in range(retries + 1):
+            handle.drain()
+            if handle.write(command) < 0:
+                time.sleep(0.04 * (attempt + 1))
+                continue
+            deadline = time.monotonic() + timeout_ms / 1000.0
+            while time.monotonic() < deadline:
+                data = handle.read(length, 60)
+                if not data:
+                    continue
+                parsed = parse_vendor_reply(
+                    data,
+                    prefix=prefix,
+                    code_offset=proto.get("reply_code_offset"),
+                    code_value=proto.get("reply_code"),
+                    level_offset=int(proto.get("level_offset", -1)),
+                    charging_byte=proto.get("charging_byte"),
+                    charging_bit=int(proto.get("charging_bit", 0) or 0),
+                )
+                if parsed is None:
+                    continue
+                level, charging = parsed
+                return Reading(
+                    level=level,
+                    charging=charging,
+                    source="vendor-query",
+                    ok=True,
+                    detail=f"厂商查询 · {len(data)}B · {bytes(data[:4]).hex(' ').upper()}",
+                )
+            time.sleep(0.03 * (attempt + 1))
+    return Reading(detail="厂商查询无应答（设备可能休眠或已断开）", detected=True, sleeping=True)
+
+
+# --------------------------------------------------------------------------- #
 # 统一入口
 # --------------------------------------------------------------------------- #
 def read_device(cfg: DeviceConfig, infos: list[HidDeviceInfo], used_slots: Optional[set[int]] = None) -> Reading:
@@ -419,6 +526,15 @@ def read_device(cfg: DeviceConfig, infos: list[HidDeviceInfo], used_slots: Optio
             last = Reading.fail("未检测到设备")
             for info in candidate_infos(infos, cfg)[:4]:
                 reading = read_generic_hid(cfg, info)
+                if reading.ok:
+                    return reading
+                last = reading
+            return last
+        if name == "vendor_query":
+            last = Reading.fail("未检测到设备")
+            candidates = [i for i in candidate_infos(infos, cfg) if i.usage_page >= 0xFF00]
+            for info in candidates[:6]:
+                reading = read_vendor_query(cfg, info)
                 if reading.ok:
                     return reading
                 last = reading
