@@ -20,6 +20,7 @@ from ..core import autostart
 from ..core.config import DeviceConfig, DeviceRegistry, SettingsStore
 from . import theme
 from .add_device import AddDeviceDialog
+from .confirm import ConfirmDialog
 from .glass import ColorSwatch, Divider, PillButton, SegmentedControl, ToggleSwitch
 
 log = logging.getLogger(__name__)
@@ -337,7 +338,7 @@ class SettingsPane(QWidget):
 
         remove = PillButton("移除", tone="neutral")
         remove.setToolTip(f"从清单里删除「{cfg.display_name}」")
-        remove.clicked.connect(lambda _=False, did=cfg.id: self.remove_device(did))
+        remove.clicked.connect(lambda _=False, did=cfg.id: self._confirm_remove(did))
         top.addWidget(remove, 0, Qt.AlignmentFlag.AlignVCenter)
         outer.addLayout(top)
 
@@ -400,6 +401,23 @@ class SettingsPane(QWidget):
         source = SOURCE_LABELS.get(cfg.source, cfg.source)
         suffix = " · 已自定义" if self.store.prefs.has_device_override(device_id) else ""
         label.setText(f"{type_cfg.label} · {source}{suffix}")
+
+    def _confirm_remove(self, device_id: str) -> None:
+        """移除前先问一句 —— 卡片和托盘图标会一起消失，不该一次误点就没了。"""
+        cfg = self.registry.get(device_id)
+        if cfg is None:
+            return
+        ok = ConfirmDialog.ask(
+            self.window(),
+            title="移除设备",
+            message=f"确定要从清单里移除「{cfg.display_name}」吗？",
+            detail="移除后卡片和托盘图标会一起消失。被移除的设备会留在本页底部，可以随时恢复。",
+            confirm_text="移除",
+            cancel_text="取消",
+            tone="danger",
+        )
+        if ok:
+            self.remove_device(device_id)
 
     def remove_device(self, device_id: str) -> bool:
         """删除设备（内置设备写墓碑，用户设备可再恢复）。"""
