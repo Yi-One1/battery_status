@@ -93,7 +93,7 @@
       "options": {
         "demo_level": 76
       },
-      "notes": "实测（2026-10-20）：2.4G 接收器只暴露一个 045E:028E 的标准 Xbox 手柄接口（15 字节输入，无输出报告），XInputGetBatteryInformation 固定返回 BatteryType=1(WIRED) + BatteryLevel=3(满档)，XInputGetCapabilities 的 Flags 也没有 WIRELESS 位 —— 也就是说这种接入方式下**没有任何电量信息**，原来的代码把它翻译成「充电中」是错的。现在 WIRED 一律返回 level=None/charging=None，界面显示「暂无电量」。另：2BDF:028A（MI_06，1024 字节厂商通道）是飞智另一个设备，手柄关着时也在，对它发 05 EC / 5A A5 01 只回一个 ack（01 5A 5A + 计数器），读不到手柄电量。SDL 的 SDL_hidapi_flydigi.c 记录了完整协议（V1 写 05 EC、应答 data[13]=0 无线 1 有线；V2 写 03 5A A5 01 02 00、应答 data[11] 高 4 位充电状态、低 4 位电量档×20），但那只在 DInput 模式暴露厂商接口时可用。"
+      "notes": "结论（2026-10-20，完整验证后）：这台手柄**不输出电量百分比**，是硬件/固件设计，不是软件缺口。界面行为：显示链路、不显示电量。证据：① 2.4G 接收器 / 手柄直连数据线 / 经充电底座三种接法，Windows 都只给一个 045E:028E 标准 Xbox 接口（UP=0x0001 U=0x0005，IN=15 / OUT=0 / FEAT=0，只挂 IG_01 子接口）。② 四条用户态通路全败——中断 OUT hid_write → rc=-1；控制传输 HidD_SetOutputReport 12 次、HidD_SetFeature 6 次全部 ERROR_INVALID_FUNCTION（err=1，HID 类驱动核对描述符后主动拒绝）；HidD_GetInputReport / HidD_GetFeature 全 FAIL；WinRT Gamepad / RawGameController 均返回 0。③ 被动监听 12004 帧全同一帧，不广播电量。④ 蓝牙模式本机实测连不上。外部佐证：官方 Direwolf 4 说明书「Low Power: The indicator light flashes red」——电量状态唯一表达是指示灯；第三方横评「飞智无法查看具体电量，仅在低电量时亮红灯提醒」。更正：早期把 2BDF:028A 当飞智设备的推断是错的，它是 HIK 2K 摄像头（usbvideo / usbaudio / usbser COM3 / HidUsb），已作废。坑：接收器与手柄直连共用 VID:PID 与序列号 045E:028E\\FLYDIGI_DIREWOLF_4，插线后 PnP 看起来无变化。XInput 仍报 BatteryType=1(WIRED) + BatteryLevel=3，代码已改为一律返回 level=None/charging=None，不再误报「充电中」。详见 docs/flydigi-battery-design.md。"
     },
     {
       "id": "mchose-g98pro",
