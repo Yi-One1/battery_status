@@ -434,14 +434,38 @@ def render_hex_template(template: str, info: HidDeviceInfo) -> bytes:
     return bytes.fromhex(text)
 
 
-def build_vendor_command(template: str, info: HidDeviceInfo, length: int) -> bytes:
-    """按接口报告长度构造命令：不足补 0，超长截断。"""
+def build_vendor_command(template: str, info: HidDeviceInfo, length: int, checksum: str = "") -> bytes:
+    """按接口报告长度构造命令：不足补 0，超长截断，最后按需补校验和。"""
     payload = render_hex_template(template, info)
     if length <= 0:
         return payload
     if len(payload) >= length:
-        return payload[:length]
-    return payload + b"\x00" * (length - len(payload))
+        payload = payload[:length]
+    else:
+        payload = payload + b"\x00" * (length - len(payload))
+    return apply_checksum(payload, checksum)
+
+
+def apply_checksum(payload: bytes, scheme: str) -> bytes:
+    """把校验和写进帧尾（覆盖最后一个字节）。
+
+    实测（迈从 G98 PRO，258A:01BB 接收器）：帧长 20，尾字节 = 前 19 字节之和。
+        D0 指令帧：13 4A 01 00 02 00 … 00 | 60
+    只认明确写在配置里的算法，不认识的方案原样返回 —— 宁可发出去被拒，
+    也不要自己编一个算法把设备写坏。
+    """
+    if not scheme or len(payload) < 2:
+        return payload
+    body = payload[:-1]
+    if scheme == "sum8":
+        value = sum(body) & 0xFF
+    elif scheme == "xor8":
+        value = 0
+        for byte in body:
+            value ^= byte
+    else:
+        return payload
+    return body + bytes([value])
 
 
 def parse_vendor_reply(
@@ -479,7 +503,9 @@ def read_vendor_query(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
     if length <= 0:
         return Reading.fail("接口报告长度未知")
 
-    command = build_vendor_command(str(proto.get("command", "")), info, length)
+    command = build_vendor_command(
+        str(proto.get("command", "")), info, length, str(proto.get("checksum", "") or "")
+    )
     prefix = render_hex_template(str(proto.get("reply_prefix", "")), info)
     timeout_ms = int(proto.get("timeout_ms", 300))
     retries = int(proto.get("retries", 1))
@@ -496,6 +522,10 @@ def read_vendor_query(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
             while time.monotonic() < deadline:
                 data = handle.read(length, 60)
                 if not data:
+                    continue
+                # 这类 dongle 会把没处理的下行帧原样回显上来，回显帧和命令逐字节相同。
+                # 不排掉的话，回显里"电量位"恰好是 0，会被读成 0% —— 比读不到更糟。
+                if bytes(data) == command:
                     continue
                 parsed = parse_vendor_reply(
                     data,
@@ -514,7 +544,7 @@ def read_vendor_query(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
                     charging=charging,
                     source="vendor-query",
                     ok=True,
-                    detail=f"厂商查询 · {len(data)}B · {bytes(data[:4]).hex(' ').upper()}",
+                    detail=f"厂商查询 · {len(data)}B · {bytes(data[:8]).hex(' ').upper()}",
                 )
             time.sleep(0.03 * (attempt + 1))
     return Reading(detail="厂商查询无应答（设备可能休眠或已断开）", detected=True, sleeping=True)

@@ -1,15 +1,21 @@
 {
   "schema": 1,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "_comment": [
     "设备配置：新增外设只需在 devices 数组追加一项，无需改代码。",
     "match            —— 在 HID 设备列表中匹配物理设备（键可省略，省略即不参与过滤）",
     "  vid / pid      —— USB 厂商号 / 产品号，可写十进制或 0x 十六进制；不确定就先跑 tools/usb_probe.py list",
     "  product_contains —— 产品名/厂商名包含的任意关键字（不区分大小写）",
     "  usage_page     —— HID 顶层 Usage Page（罗技 HID++ 接口为 65280 = 0xFF00）",
-    "protocol         —— 读数协议，name 支持 hid / logitech_hidpp / demo",
+    "protocol         —— 读数协议，name 支持 hid / logitech_hidpp / vendor_query / xinput / demo",
     "  hid.init       —— 连接后依次下发的请求报文（十六进制），用于唤醒厂商私有上报",
     "  hid.parse      —— 厂商报文解析规则：prefix 前缀、mask 掩码、offset 电量字节、scale 系数、charging_byte/bit 充电位",
+    "  vendor_query   —— 主动问答式通道（不主动上报，必须问一句答一句）：",
+    "    command      —— 命令模板（十六进制），支持 {vid_be}/{vid_le}/{pid_be}/{pid_le} 占位符",
+    "    report_length—— 该接口一帧的字节数（含首字节报告 ID）",
+    "    checksum     —— 帧尾校验方案：sum8（前 n-1 字节求和取低 8 位）/ xor8；留空则不补",
+    "    reply_prefix —— 只认以此开头的应答，避免把别的报文当电量",
+    "    level_offset —— 电量字节在应答里的下标",
     "  logitech_hidpp.device_name_contains —— 通过 HID++ 0x0005 读到的无线设备名关键字",
     "options          —— demo_level 仅用于演示模式；notes 为维护备注，不参与运行"
   ],
@@ -105,15 +111,19 @@
         ]
       },
       "protocol": {
-        "name": "hid",
-        "prefer": "auto",
-        "init": [],
-        "parse": null
+        "name": "vendor_query",
+        "command": "13 4A 01 00 02 00",
+        "report_length": 20,
+        "checksum": "sum8",
+        "reply_prefix": "13 4A 01 00 02",
+        "level_offset": 5,
+        "timeout_ms": 400,
+        "retries": 2
       },
       "options": {
         "demo_level": 64
       },
-      "notes": "SINOWEALTH(258A:01BB) 2.4G 接收器。标准电量页为空；0xFF00 的 6 字节 feature 通道只有 0x05=版本字符串用，0xFF02 的 20 字节通道对 D0/13 系命令均无应答。M HUB 驱动把 HID 通信放在 Chromium 沙箱进程内，常规注入拿不到报文，需用 tools/hid_trace.py 在驱动启动瞬间追踪（见 README）。"
+      "notes": "实测（2026-10-20，Frida 追踪 MCHOSE HUB + 真机验证）：0xFF02/0x02 接口的 20 字节通道。写 13 4A 01 00 02 00 + 补零到 19 字节 + 尾字节取前 19 字节之和(0x60) → 收 13 4A 01 00 02 64 01 …,byte5 = 0x64 = 100%,与 M HUB 显示一致；延迟 9~22ms,6/6 命中。byte6(0x01)含义未确认,不当充电位用。注意 dongle 会把不认识的命令原样回显,回显帧与命令逐字节相同,必须排掉否则电量位为 0 会读成 0%。标准电量页为空;0xFF00 的 6 字节 feature 只有 0x05=版本字符串; 0xFF01 只有 feature 0x0A;13 05 是固定设备信息应答,与电量无关。"
     },
     {
       "id": "edifier-g3max",

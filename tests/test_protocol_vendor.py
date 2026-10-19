@@ -1,9 +1,11 @@
 """厂商查询协议（vendor_query）测试。
 
-用真实抓包帧做夹具，锁住三件事：
+用真实抓包帧做夹具，锁住这些事：
   1. 命令模板的字节序（漫步者的帧是 `D0 35 BB`，不是 `D0 BB 35`）
-  2. 应答解析只认自己的前缀 + 状态码，别把别的报文当成电量
-  3. 电量必须落在 0..100，否则宁可报错也不显示假数据
+  2. 帧尾校验和（迈从的帧是前 19 字节求和）
+  3. 应答解析只认自己的前缀 + 状态码，别把别的报文当成电量
+  4. dongle 的回显帧必须被排掉 —— 否则电量位为 0，会显示成 0%
+  5. 电量必须落在 0..100，否则宁可报错也不显示假数据
 """
 from __future__ import annotations
 
@@ -12,8 +14,15 @@ from pathlib import Path
 
 import pytest
 
+from app.core.config import DeviceConfig
 from app.core.hidapi_io import HidDeviceInfo
-from app.core.protocols import build_vendor_command, parse_vendor_reply, render_hex_template
+from app.core.protocols import (
+    apply_checksum,
+    build_vendor_command,
+    parse_vendor_reply,
+    read_vendor_query,
+    render_hex_template,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -155,6 +164,190 @@ def test_live_edifier_reads_a_sane_percentage():
         pytest.skip("配置里没有漫步者")
     infos = enumerate_devices()
     if not any(i.vid == 0x35BB for i in infos):
+        pytest.skip("设备未连接")
+
+    reading = read_device(cfg, infos, set())
+    assert reading.ok, f"读取失败：{reading.detail}"
+    assert reading.level is not None and 0 <= reading.level <= 100
+    assert reading.source == "vendor-query"
+
+
+# --------------------------------------------------------------------------- #
+# 迈从 G98 PRO（258A:01BB）
+#
+# 实测帧（2026-10-20，真机；M HUB 同时显示 100%）：
+#   写  13 4A 01 00 02 00 00 … 00 60     ← 尾字节 = 前 19 字节之和
+#   收  13 4A 01 00 02 64 01 00 … 00 C5  ← byte5 = 0x64 = 100%
+# --------------------------------------------------------------------------- #
+def mchose_info() -> HidDeviceInfo:
+    return HidDeviceInfo(
+        path=b"\\\\?\\hid#vid_258a&pid_01bb&mi_01&col07",
+        vid=0x258A,
+        pid=0x01BB,
+        product="2.4G Wireless Receiver",
+        manufacturer="SINO WEALTH",
+        usage_page=0xFF02,
+        usage=0x02,
+    )
+
+
+MCHOSE_QUERY = bytes(
+    [0x13, 0x4A, 0x01, 0x00, 0x02, 0x00] + [0x00] * 13 + [0x60]
+)
+MCHOSE_REPLY = bytes(
+    [0x13, 0x4A, 0x01, 0x00, 0x02, 0x64, 0x01] + [0x00] * 12 + [0xC5]
+)
+
+
+def test_sum8_checksum_lands_on_the_last_byte():
+    command = build_vendor_command("13 4A 01 00 02 00", mchose_info(), 20, "sum8")
+    assert command == MCHOSE_QUERY
+    assert len(command) == 20
+    assert command[-1] == sum(command[:-1]) & 0xFF
+
+
+def test_unknown_checksum_scheme_is_left_alone():
+    """不认识的算法不许瞎猜 —— 算错了帧会被设备拒收，算"对了"反而可能写坏配置。"""
+    payload = bytes([0x13, 0x4A, 0x01, 0x00, 0x02, 0x00, 0, 0])
+    assert apply_checksum(payload, "") == payload
+    assert apply_checksum(payload, "crc32") == payload
+
+
+def test_xor8_checksum_is_supported():
+    payload = bytes([0x10, 0x20, 0x30, 0x00])
+    assert apply_checksum(payload, "xor8") == bytes([0x10, 0x20, 0x30, 0x00 ^ 0x10 ^ 0x20 ^ 0x30])
+
+
+def test_mchose_reply_reads_100_percent():
+    result = parse_vendor_reply(
+        MCHOSE_REPLY, prefix=bytes([0x13, 0x4A, 0x01, 0x00, 0x02]), level_offset=5
+    )
+    assert result == (100, None)
+
+
+def test_mchose_reply_rejects_a_different_sub_type():
+    other = bytearray(MCHOSE_REPLY)
+    other[4] = 0x04  # 按键事件那一类
+    assert (
+        parse_vendor_reply(bytes(other), prefix=bytes([0x13, 0x4A, 0x01, 0x00, 0x02]), level_offset=5)
+        is None
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 主动查询的交互过程：回显必须排掉
+# --------------------------------------------------------------------------- #
+class _FakeCaps:
+    input_length = 20
+    output_length = 20
+    feature_length = 0
+
+
+class _FakeHandle:
+    """按顺序吐预告好的输入帧；记录写出去的内容。"""
+
+    def __init__(self, frames: list[bytes]) -> None:
+        self._frames = list(frames)
+        self.written: list[bytes] = []
+
+    def __enter__(self) -> "_FakeHandle":
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        return False
+
+    @property
+    def is_open(self) -> bool:
+        return True
+
+    def write(self, payload: bytes) -> int:
+        self.written.append(bytes(payload))
+        return len(payload)
+
+    def read(self, size: int = 64, timeout_ms: int = 150):
+        return self._frames.pop(0) if self._frames else None
+
+    def drain(self, *args, **kwargs) -> list:
+        return []
+
+    def close(self) -> None:
+        return None
+
+
+def _mchose_cfg() -> DeviceConfig:
+    return DeviceConfig(
+        id="mchose-g98pro",
+        type="keyboard",
+        display_name="迈从 G98 PRO",
+        match={"vid": 0x258A, "pid": 0x01BB},
+        protocol={
+            "name": "vendor_query",
+            "command": "13 4A 01 00 02 00",
+            "report_length": 20,
+            "checksum": "sum8",
+            "reply_prefix": "13 4A 01 00 02",
+            "level_offset": 5,
+            "timeout_ms": 200,
+            "retries": 0,
+        },
+    )
+
+
+def _patch_query(monkeypatch, frames: list[bytes]) -> _FakeHandle:
+    handle = _FakeHandle(frames)
+    monkeypatch.setattr("app.core.protocols.HidHandle", lambda info: handle)
+    monkeypatch.setattr("app.core.protocols.device_caps", lambda path: _FakeCaps())
+    return handle
+
+
+def test_query_writes_the_checksummed_frame(monkeypatch):
+    handle = _patch_query(monkeypatch, [MCHOSE_REPLY])
+    reading = read_vendor_query(_mchose_cfg(), mchose_info())
+
+    assert reading.ok and reading.level == 100
+    assert reading.source == "vendor-query"
+    assert handle.written == [MCHOSE_QUERY]
+
+
+def test_echoed_command_is_not_mistaken_for_0_percent(monkeypatch):
+    """dongle 会把不认识的命令原样回显；回显里电量位是 0，绝不能被当成 0%。"""
+    _patch_query(monkeypatch, [MCHOSE_QUERY, MCHOSE_REPLY])
+    reading = read_vendor_query(_mchose_cfg(), mchose_info())
+    assert reading.ok and reading.level == 100
+
+
+def test_only_echo_means_no_reading(monkeypatch):
+    _patch_query(monkeypatch, [MCHOSE_QUERY, MCHOSE_QUERY])
+    reading = read_vendor_query(_mchose_cfg(), mchose_info())
+    assert not reading.ok
+    assert reading.level is None
+    assert reading.detected is True
+
+
+def test_mchose_config_wires_the_query_protocol():
+    data = json.loads((ROOT / "app" / "config" / "devices.json").read_text(encoding="utf-8"))
+    device = next(d for d in data["devices"] if d["id"] == "mchose-g98pro")
+    proto = device["protocol"]
+    assert proto["name"] == "vendor_query"
+    assert proto["command"] == "13 4A 01 00 02 00"
+    assert proto["checksum"] == "sum8"
+    assert proto["report_length"] == 20
+    assert proto["reply_prefix"] == "13 4A 01 00 02"
+    assert proto["level_offset"] == 5
+
+
+def test_live_mchose_reads_a_sane_percentage():
+    """有设备在场时真实读一次；没有设备就跳过（CI 上不会红）。"""
+    from app.core.config import DeviceRegistry
+    from app.core.hidapi_io import enumerate_devices
+    from app.core.protocols import read_device
+
+    registry = DeviceRegistry()
+    cfg = next((d for d in registry.enabled_devices() if d.id == "mchose-g98pro"), None)
+    if cfg is None:
+        pytest.skip("配置里没有迈从")
+    infos = enumerate_devices()
+    if not any(i.vid == 0x258A for i in infos):
         pytest.skip("设备未连接")
 
     reading = read_device(cfg, infos, set())

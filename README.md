@@ -29,7 +29,7 @@ Windows 桌面端 2.4G 无线外设电量监测工具。常驻托盘，实时显
 | --- | --- | --- | --- |
 | 罗技 GPW2 | 接收器 `046D:C547` / 有线 `046D:C094` | HID++ 2.0 `0x1004` 统一电量；接收器走长报文 `0x11` + 设备索引 1，有线走索引 `0xFF` | ✅ 正常，接收器 59~61%，插线充电 71% |
 | 飞智 冰原狼 4 | `045E:028E` XInput 兼容手柄 | `XInputGetBatteryInformation` | ⚠️ 只给四档（5/25/60/100）；有线供电时无档位，显示「充电中 / --」 |
-| 迈从 G98 PRO | `258A:01BB` SINOWEALTH 2.4G 接收器 | 厂商私有报文（待抓包） | ⚠️ 不暴露标准电量页，需按第五节配置 `parse` 规则 |
+| 迈从 G98 PRO | `258A:01BB` SINOWEALTH 2.4G 接收器 | 主动查询：20 字节帧 `13 4A 01 00 02 00` + 帧尾 sum8 校验 → 应答第 6 字节 | ✅ 正常，读到 100%（9~22 ms，与 M HUB 一致） |
 | 漫步者 G3 MAX | `35BB:A226` Jieli 2.4G dongle | 主动查询：`D0 35 BB 01 00` → 应答第 6 字节 | ✅ 正常，读到 48%（与驱动标题栏一致） |
 
 说明：厂商 dongle 都是"私有协议"，没有任何公开文档，**唯一可靠的办法是在真机上抓报文**。
@@ -99,25 +99,43 @@ Windows 桌面端 2.4G 无线外设电量监测工具。常驻托盘，实时显
 **不能当成 100%**，本项目此时返回"充电中 + 无档位"。四档折算为 5/25/60/100。
 
 ### 4. 配置驱动的厂商报文解析（扩展性的核心）
-`devices.json` 里每台设备描述"怎么找到它"和"怎么读它"：
+`devices.json` 里每台设备描述"怎么找到它"和"怎么读它"。厂商 dongle 分两类，配置里也是两套：
+
+**① 被动式（`hid`）** —— 设备会自己往外推电量，我们只负责接住：
 
 ```json
-{
-  "id": "mchose-g98pro",
-  "type": "keyboard",
-  "display_name": "迈从 G98 PRO",
-  "match": { "vid": 9610, "pid": 443, "product_contains": ["2.4g wireless receiver"] },
-  "protocol": {
-    "name": "hid",
-    "init": ["07 02 00 00"],                       // 可选：先发唤醒/查询报文
-    "parse": {                                     // 从上报里取电量
-      "prefix": "5A A5", "mask": "FF FF",          // 前缀 + 掩码匹配
-      "offset": 4, "scale": 1,                     // 第 4 字节即电量
-      "charging_byte": 5, "charging_bit": 1
-    }
+"protocol": {
+  "name": "hid",
+  "init": ["07 02 00 00"],                       // 可选：先发唤醒/查询报文
+  "parse": {                                     // 从上报里取电量
+    "prefix": "5A A5", "mask": "FF FF",          // 前缀 + 掩码匹配
+    "offset": 4, "scale": 1,                     // 第 4 字节即电量
+    "charging_byte": 5, "charging_bit": 1
   }
 }
 ```
+
+**② 主动问答式（`vendor_query`）** —— 不问不说话，问一句答一句（迈从、漫步者都是这种）：
+
+```json
+"protocol": {
+  "name": "vendor_query",
+  "command": "13 4A 01 00 02 00",   // 命令模板，支持 {vid_be}/{pid_le} 等占位符
+  "report_length": 20,              // 一帧多少字节（含首字节报告 ID）
+  "checksum": "sum8",               // 帧尾校验：前 n-1 字节求和取低 8 位（也支持 xor8）
+  "reply_prefix": "13 4A 01 00 02", // 只认以此开头的应答
+  "level_offset": 5,                // 电量在第 6 字节
+  "timeout_ms": 400, "retries": 2
+}
+```
+
+两个实测踩过的坑，都已经写进代码：
+
+- **帧尾校验和**：迈从的 20 字节帧最后一字节 = 前 19 字节之和（`13 4A 01 00 02 00 … 60`）。
+  不补校验和，设备直接不认。
+- **回显帧**：这类 dongle 会把不认识的下行帧原样回显上来，回显帧与命令**逐字节相同**，
+  而"电量位"恰好是 0 —— 不排掉就会显示成 **0%**，比读不到更糟。
+  `read_vendor_query()` 里明确跳过与命令完全一致的帧。
 
 `match` 的四个键（`vid` / `pid` / `usage_page` / `product_contains`）任意组合，
 省略即不参与过滤。用户还可以在 `%APPDATA%\BatteryGlass\devices.json` 里追加或覆盖同名条目，
