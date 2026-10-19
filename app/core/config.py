@@ -327,6 +327,23 @@ class DeviceRegistry:
             self.save_user_config()
         return True
 
+    def rename_device(self, device_id: str, display_name: str, *, persist: bool = True) -> bool:
+        """修改设备显示名，写入用户层覆盖内置模板。"""
+        cfg = self.get(device_id)
+        if cfg is None:
+            return False
+        name = str(display_name).strip()
+        if not name or name == cfg.display_name:
+            return False
+        raw = cfg.to_raw()
+        raw["display_name"] = name
+        self._user_raw[device_id] = raw
+        self._rebuild()
+        if persist:
+            self.save_user_config()
+        log.info("重命名设备 %s -> %s", device_id, name)
+        return True
+
     def save_user_config(self) -> bool:
         payload = {
             "schema": 1,

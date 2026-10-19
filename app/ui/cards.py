@@ -97,6 +97,9 @@ class DeviceCard(GlassSurface):
 
         self._snapshot: Optional[Snapshot] = None
 
+    def set_display_name(self, name: str) -> None:
+        self.name_label.setText(name)
+
     # -- 更新 ---------------------------------------------------------------
     def apply_snapshot(self, snapshot: Snapshot, low_threshold: int) -> None:
         self._snapshot = snapshot

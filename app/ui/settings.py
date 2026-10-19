@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QColorDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QScrollArea,
     QSlider,
     QVBoxLayout,
@@ -333,7 +334,14 @@ class SettingsPane(QWidget):
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(8)
-        top.addWidget(_label(cfg.display_name, 12.0, 500), 1)
+
+        name_edit = QLineEdit(cfg.display_name)
+        name_edit.setFont(theme.font(12.0, 500))
+        name_edit.setStyleSheet(
+            f"color: {theme.TEXT_PRIMARY}; background: transparent; border: none; padding: 0px;"
+        )
+        name_edit.editingFinished.connect(lambda did=cfg.id, ed=name_edit: self._on_device_rename(did, ed.text()))
+        top.addWidget(name_edit, 1)
 
         dot = ColorSwatch(self.store.prefs.color_for_device(cfg), diameter=20)
         dot.setToolTip(f"「{cfg.display_name}」的颜色 · 当前 {self.store.prefs.color_for_device(cfg)}")
@@ -384,6 +392,13 @@ class SettingsPane(QWidget):
     def _on_device_style(self, device_id: str, value: str) -> None:
         if not self.store.prefs.set_device_style(device_id, value):
             return
+        self._refresh_device_hint(device_id)
+        self._commit()
+
+    def _on_device_rename(self, device_id: str, new_name: str) -> None:
+        if not self.registry.rename_device(device_id, new_name):
+            return
+        # 主界面卡片会随 devices_changed 重建，设置页只更新当前行提示
         self._refresh_device_hint(device_id)
         self._commit()
 
