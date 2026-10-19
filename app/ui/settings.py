@@ -69,6 +69,9 @@ class SettingsPane(QWidget):
         self.store = store
         self._building = True
         self._device_rows: dict[str, QWidget] = {}
+        self._device_swatches: dict[str, ColorSwatch] = {}
+        self._device_segments: dict[str, SegmentedControl] = {}
+        self._device_hints: dict[str, QLabel] = {}
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         outer = QVBoxLayout(self)
@@ -123,7 +126,7 @@ class SettingsPane(QWidget):
 
         column.addWidget(Divider())
 
-        column.addWidget(self._section("每类外设的颜色与样式"))
+        column.addWidget(self._section("不单独设置时，按外设类型取默认外观"))
         for key, type_cfg in registry.types.items():
             column.addWidget(self._type_row(key, type_cfg.label, type_cfg.color))
 
@@ -297,6 +300,9 @@ class SettingsPane(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         self._device_rows.clear()
+        self._device_swatches.clear()
+        self._device_segments.clear()
+        self._device_hints.clear()
 
         devices = self.registry.enabled_devices()
         if not devices:
@@ -311,30 +317,89 @@ class SettingsPane(QWidget):
         self._sync_restore_row()
 
     def _device_row(self, cfg: DeviceConfig) -> QWidget:
+        """一台设备两行：上行名称 + 取色 + 移除，下行来源说明 + 样式选择。"""
         holder = QWidget()
         holder.setStyleSheet("background: transparent;")
-        layout = QHBoxLayout(holder)
-        layout.setContentsMargins(0, 4, 0, 4)
-        layout.setSpacing(8)
+        outer = QVBoxLayout(holder)
+        outer.setContentsMargins(0, 5, 0, 5)
+        outer.setSpacing(2)
 
-        type_cfg = self.registry.type_of(cfg)
-        text_box = QVBoxLayout()
-        text_box.setContentsMargins(0, 0, 0, 0)
-        text_box.setSpacing(1)
-        text_box.addWidget(_label(cfg.display_name, 12.0, 500))
-        source = SOURCE_LABELS.get(cfg.source, cfg.source)
-        text_box.addWidget(_label(f"{type_cfg.label} · {source}", 10.0, 400, theme.TEXT_TERTIARY))
-        layout.addLayout(text_box, 1)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(8)
+        top.addWidget(_label(cfg.display_name, 12.0, 500), 1)
 
-        dot = ColorSwatch(self.store.prefs.color_for(cfg.type), diameter=14)
-        dot.setToolTip(f"当前颜色 {self.store.prefs.color_for(cfg.type)}")
-        layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        dot = ColorSwatch(self.store.prefs.color_for_device(cfg), diameter=20)
+        dot.setToolTip(f"「{cfg.display_name}」的颜色 · 当前 {self.store.prefs.color_for_device(cfg)}")
+        dot.clicked.connect(lambda _=False, c=cfg, s=dot: self._pick_device_color(c, s))
+        self._device_swatches[cfg.id] = dot
+        top.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        remove = PillButton("移除", tone="danger")
+        remove = PillButton("移除", tone="neutral")
         remove.setToolTip(f"从清单里删除「{cfg.display_name}」")
         remove.clicked.connect(lambda _=False, did=cfg.id: self.remove_device(did))
-        layout.addWidget(remove, 0, Qt.AlignmentFlag.AlignVCenter)
+        top.addWidget(remove, 0, Qt.AlignmentFlag.AlignVCenter)
+        outer.addLayout(top)
+
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(0, 0, 0, 0)
+        bottom.setSpacing(8)
+        type_cfg = self.registry.type_of(cfg)
+        source = SOURCE_LABELS.get(cfg.source, cfg.source)
+        suffix = " · 已自定义" if self.store.prefs.has_device_override(cfg.id) else ""
+        hint = _label(f"{type_cfg.label} · {source}{suffix}", 10.0, 400, theme.TEXT_TERTIARY)
+        self._device_hints[cfg.id] = hint
+        bottom.addWidget(hint, 1)
+
+        segmented = SegmentedControl(STYLE_OPTIONS, height=22)
+        segmented.setFixedWidth(126)
+        segmented.set_value(self.store.prefs.style_for_device(cfg))
+        segmented.changed.connect(lambda value, did=cfg.id: self._on_device_style(did, value))
+        self._device_segments[cfg.id] = segmented
+        bottom.addWidget(segmented, 0, Qt.AlignmentFlag.AlignVCenter)
+        outer.addLayout(bottom)
         return holder
+
+    def _pick_device_color(self, cfg: DeviceConfig, swatch: ColorSwatch) -> None:
+        current = QColor(self.store.prefs.color_for_device(cfg))
+        dialog = QColorDialog(current, self.window())
+        dialog.setWindowTitle(f"「{cfg.display_name}」的颜色")
+        dialog.setOption(QColorDialog.ColorDialogOption.ShowAlphaChannel, False)
+        if not dialog.exec():
+            return
+        chosen = dialog.currentColor()
+        if not chosen.isValid() or not self.store.prefs.set_device_color(cfg.id, chosen.name()):
+            return
+        swatch.set_color(chosen.name())
+        swatch.setToolTip(f"「{cfg.display_name}」的颜色 · 当前 {chosen.name()}")
+        self._refresh_device_hint(cfg.id)
+        self._commit()
+
+    def _on_device_style(self, device_id: str, value: str) -> None:
+        if not self.store.prefs.set_device_style(device_id, value):
+            return
+        self._refresh_device_hint(device_id)
+        self._commit()
+
+    def reset_device_appearance(self, device_id: str) -> bool:
+        """撤掉单台设备的自定义，回到所属类型的默认外观。"""
+        if not self.store.prefs.has_device_override(device_id):
+            return False
+        self.store.prefs.reset_device(device_id)
+        self._commit()
+        self._rebuild_device_rows()
+        return True
+
+    def _refresh_device_hint(self, device_id: str) -> None:
+        """只改那台设备的"已自定义"标记，避免整列表重建（重建会销毁正在被点击的控件）。"""
+        label = self._device_hints.get(device_id)
+        cfg = self.registry.get(device_id)
+        if label is None or cfg is None:
+            return
+        type_cfg = self.registry.type_of(cfg)
+        source = SOURCE_LABELS.get(cfg.source, cfg.source)
+        suffix = " · 已自定义" if self.store.prefs.has_device_override(device_id) else ""
+        label.setText(f"{type_cfg.label} · {source}{suffix}")
 
     def remove_device(self, device_id: str) -> bool:
         """删除设备（内置设备写墓碑，用户设备可再恢复）。"""
@@ -458,3 +523,13 @@ class SettingsPane(QWidget):
             swatch.set_color(self.store.prefs.color_for(key))
         for key, segmented in getattr(self, "_segments", {}).items():
             segmented.set_value(self.store.prefs.style_for(key))
+        # 单台设备的覆盖值：颜色圆点 + 样式分段都要跟着刷新
+        for device_id, swatch in self._device_swatches.items():
+            cfg = self.registry.get(device_id)
+            if cfg is not None:
+                swatch.set_color(self.store.prefs.color_for_device(cfg))
+        for device_id, segmented in self._device_segments.items():
+            cfg = self.registry.get(device_id)
+            if cfg is not None:
+                segmented.set_value(self.store.prefs.style_for_device(cfg))
+            self._refresh_device_hint(device_id)

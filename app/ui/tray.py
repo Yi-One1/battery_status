@@ -174,7 +174,7 @@ class TrayController(QObject):
                 self._icons[0].setIcon(battery_icon(None, theme.ACCENT_BLUE, offline=True))
                 self._icons[0].setToolTip("外设电量 · 未检测到设备")
                 return
-            color = prefs.color_for(cfg.type)
+            color = prefs.color_for_device(cfg)
             self._icons[0].setIcon(
                 battery_icon(snap.level, color, bool(snap.charging), show_percent, not snap.online)
             )
@@ -185,7 +185,7 @@ class TrayController(QObject):
         lines = []
         for index, cfg in enumerate(devices):
             snap = snapshots[cfg.id]
-            color = prefs.color_for(cfg.type)
+            color = prefs.color_for_device(cfg)
             self._icons[index].setIcon(
                 battery_icon(snap.level, color, bool(snap.charging), show_percent, not snap.online)
             )
@@ -227,7 +227,9 @@ class TrayController(QObject):
             if snap is None:
                 continue
             action = QAction(self._device_line(cfg.display_name, snap), self._menu)
-            action.setIcon(battery_icon(snap.level, prefs.color_for(cfg.type), bool(snap.charging), True, not snap.online))
+            action.setIcon(
+                battery_icon(snap.level, prefs.color_for_device(cfg), bool(snap.charging), True, not snap.online)
+            )
             action.triggered.connect(self.show_panel.emit)
             self._menu.addAction(action)
         self._menu.addSeparator()

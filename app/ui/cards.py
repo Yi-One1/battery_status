@@ -129,6 +129,15 @@ class DeviceCard(GlassSurface):
     def set_style(self, style: str) -> None:
         self.gauge.set_style(style)
 
+    @property
+    def color(self) -> str:
+        """当前生效的强调色（测试与调试用）。"""
+        return self._color
+
+    @property
+    def style(self) -> str:
+        return self.gauge.style
+
     def refresh_name(self, display_name: str, type_label: str) -> None:
         self.type_label = type_label
         self.name_label.setText(display_name)

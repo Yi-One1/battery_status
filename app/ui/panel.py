@@ -227,8 +227,8 @@ class Panel(QWidget):
                 cfg.id,
                 cfg.display_name,
                 type_cfg.label,
-                self.store.prefs.color_for(cfg.type),
-                self.store.prefs.style_for(cfg.type),
+                self.store.prefs.color_for_device(cfg),
+                self.store.prefs.style_for_device(cfg),
                 self._page,
             )
             row, col = divmod(index, 2)
@@ -397,8 +397,8 @@ class Panel(QWidget):
         for cfg in self.registry.enabled_devices():
             card = self._cards.get(cfg.id)
             if card:
-                card.set_color(self.store.prefs.color_for(cfg.type))
-                card.set_style(self.store.prefs.style_for(cfg.type))
+                card.set_color(self.store.prefs.color_for_device(cfg))
+                card.set_style(self.store.prefs.style_for_device(cfg))
         self.shell.setFixedSize(self.shell.width(), self.shell.height())
         self._resize_for_rows()
         self._apply_window_blur()

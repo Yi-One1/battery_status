@@ -374,8 +374,12 @@ class DeviceRegistry:
 # --------------------------------------------------------------------------- #
 @dataclass
 class Preferences:
+    # 按"外设类型"的颜色/样式：既是同类设备的默认值，也是新设备的初始值
     colors: dict[str, str] = field(default_factory=dict)
     styles: dict[str, str] = field(default_factory=dict)
+    # 按"单台设备"的覆盖值：key 是 device id。空表示跟随所属类型
+    device_colors: dict[str, str] = field(default_factory=dict)
+    device_styles: dict[str, str] = field(default_factory=dict)
     refresh_seconds: int = 60
     tray_mode: str = DEFAULT_TRAY_MODE
     tray_show_percent: bool = False
@@ -418,6 +422,7 @@ class Preferences:
         if prefs.tray_mode not in ("per-device", "merged"):
             prefs.tray_mode = DEFAULT_TRAY_MODE
         prefs.sanitize_types(registry)
+        prefs.sanitize_devices()
         return prefs
 
     def sanitize_types(self, registry: DeviceRegistry) -> None:
@@ -427,12 +432,65 @@ class Preferences:
             style = self.styles.get(key) or type_cfg.style
             self.styles[key] = style if style in STYLES else type_cfg.style
 
+    def sanitize_devices(self) -> None:
+        """丢掉非法的按设备覆盖项 —— 丢了就自动回落到类型默认，比留着一个坏值安全。"""
+        for device_id, color in list(self.device_colors.items()):
+            if not (isinstance(color, str) and color.startswith("#")):
+                self.device_colors.pop(device_id, None)
+        for device_id, style in list(self.device_styles.items()):
+            if style not in STYLES:
+                self.device_styles.pop(device_id, None)
+
     # -- 访问 ---------------------------------------------------------------
     def color_for(self, type_key: str) -> str:
         return self.colors.get(type_key, "#0A84FF")
 
     def style_for(self, type_key: str) -> str:
         return self.styles.get(type_key, "ring")
+
+    @staticmethod
+    def _split(target: Any) -> tuple[str, str]:
+        """既接受 DeviceConfig，也接受 (device_id, type_key) 元组或纯 id。"""
+        if isinstance(target, str):
+            return target, ""
+        if isinstance(target, tuple):
+            return str(target[0]), str(target[1]) if len(target) > 1 else ""
+        return str(getattr(target, "id", "")), str(getattr(target, "type", ""))
+
+    def color_for_device(self, target: Any) -> str:
+        """设备自己的颜色优先，没设过就跟随所属类型。"""
+        device_id, type_key = self._split(target)
+        override = self.device_colors.get(device_id)
+        if isinstance(override, str) and override.startswith("#"):
+            return override
+        return self.color_for(type_key)
+
+    def style_for_device(self, target: Any) -> str:
+        device_id, type_key = self._split(target)
+        override = self.device_styles.get(device_id)
+        if isinstance(override, str) and override in STYLES:
+            return override
+        return self.style_for(type_key)
+
+    def set_device_color(self, device_id: str, color: str) -> bool:
+        if not (isinstance(color, str) and color.startswith("#")):
+            return False
+        self.device_colors[str(device_id)] = color
+        return True
+
+    def set_device_style(self, device_id: str, style: str) -> bool:
+        if style not in STYLES:
+            return False
+        self.device_styles[str(device_id)] = style
+        return True
+
+    def has_device_override(self, device_id: str) -> bool:
+        return str(device_id) in self.device_colors or str(device_id) in self.device_styles
+
+    def reset_device(self, device_id: str) -> None:
+        """撤掉单台设备的自定义，回到所属类型的默认外观。"""
+        self.device_colors.pop(str(device_id), None)
+        self.device_styles.pop(str(device_id), None)
 
 
 class SettingsStore:

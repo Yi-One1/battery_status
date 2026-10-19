@@ -59,6 +59,14 @@ class BatteryGauge(QWidget):
         self._color = color
         self.update()
 
+    @property
+    def style(self) -> str:
+        return self._style
+
+    @property
+    def color(self) -> str:
+        return self._color
+
     def set_style(self, style: str) -> None:
         if style not in STYLE_HEIGHT or style == self._style:
             return
