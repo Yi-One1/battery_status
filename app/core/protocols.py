@@ -541,6 +541,23 @@ def read_vendor_query(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
                 if parsed is None:
                     continue
                 level, charging = parsed
+                presence = proto.get("presence") or {}
+                if level == 0 and isinstance(presence.get("offset"), int):
+                    # 关机后 dongle 还插着，也会老老实实回一帧"电量 0"。
+                    # 光看电量分不出"真的没电"和"设备关了"，所以再看一个状态字节：
+                    # 电量 0 且状态字节不是"在用"的值 → 判定为已关机（未连接）。
+                    # 反过来，电量非 0 时完全不信这个字节 —— 它的确切含义还没验证过
+                    # （可能是"已连接"，也可能是"充电中"），宁可保守。
+                    offset = int(presence["offset"])
+                    expected = int(presence.get("value", 1))
+                    if 0 <= offset < len(data) and data[offset] != expected:
+                        return Reading(
+                            offline=True,
+                            detail=(
+                                f"设备已关闭（电量位 0，状态字节 0x{data[offset]:02X}）"
+                                f" · {bytes(data[:8]).hex(' ').upper()}"
+                            ),
+                        )
                 return Reading(
                     level=level,
                     charging=charging,

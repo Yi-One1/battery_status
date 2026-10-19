@@ -238,9 +238,10 @@ def test_mchose_reply_rejects_a_different_sub_type():
 # 主动查询的交互过程：回显必须排掉
 # --------------------------------------------------------------------------- #
 class _FakeCaps:
-    input_length = 20
-    output_length = 20
-    feature_length = 0
+    def __init__(self, length: int = 20) -> None:
+        self.input_length = length
+        self.output_length = length
+        self.feature_length = 0
 
 
 class _FakeHandle:
@@ -293,10 +294,10 @@ def _mchose_cfg() -> DeviceConfig:
     )
 
 
-def _patch_query(monkeypatch, frames: list[bytes]) -> _FakeHandle:
+def _patch_query(monkeypatch, frames: list[bytes], length: int = 20) -> _FakeHandle:
     handle = _FakeHandle(frames)
     monkeypatch.setattr("app.core.protocols.HidHandle", lambda info: handle)
-    monkeypatch.setattr("app.core.protocols.device_caps", lambda path: _FakeCaps())
+    monkeypatch.setattr("app.core.protocols.device_caps", lambda path: _FakeCaps(length))
     return handle
 
 
@@ -354,3 +355,106 @@ def test_live_mchose_reads_a_sane_percentage():
     assert reading.ok, f"读取失败：{reading.detail}"
     assert reading.level is not None and 0 <= reading.level <= 100
     assert reading.source == "vendor-query"
+
+
+# --------------------------------------------------------------------------- #
+# 漫步者关机：不能把「关机」当成「电量 0%」
+#
+# 实测（2026-10-20）：
+#   开机  D0 35 BB 0A 00 01 30 00   byte5=0x01、byte6=0x30=48%
+#   关机  D0 35 BB 0A 00 00 00 00   byte5=0x00、byte6=0x00
+# --------------------------------------------------------------------------- #
+EDIFIER_ON = bytes([0xD0, 0x35, 0xBB, 0x0A, 0x00, 0x01, 0x30] + [0] * 57)
+EDIFIER_OFF = bytes([0xD0, 0x35, 0xBB, 0x0A, 0x00, 0x00, 0x00] + [0] * 57)
+
+
+def _edifier_cfg(presence: bool = True) -> DeviceConfig:
+    proto = {
+        "name": "vendor_query",
+        "command": "D0 {vid_be} 01 00",
+        "report_length": 64,
+        "reply_prefix": "D0 {vid_be}",
+        "reply_code_offset": 3,
+        "reply_code": 10,
+        "level_offset": 6,
+        "timeout_ms": 200,
+        "retries": 0,
+    }
+    if presence:
+        proto["presence"] = {"offset": 5, "value": 1}
+    return DeviceConfig(
+        id="edifier-g3max",
+        type="headset",
+        display_name="漫步者 G3 MAX",
+        match={"vid": 0x35BB},
+        protocol=proto,
+    )
+
+
+def _edifier_info() -> HidDeviceInfo:
+    return HidDeviceInfo(
+        path=b"\\\\?\\hid#vid_35bb&pid_a226",
+        vid=0x35BB,
+        pid=0xA226,
+        product="HECATE G3 MAX无线版",
+        manufacturer="Edifier",
+        usage_page=0xFF02,
+        usage=0x02,
+    )
+
+
+def test_edifier_off_reply_is_offline_not_zero_percent(monkeypatch):
+    """问题5 的核心：关机帧 (0A 00 00 00) 必须判成已关闭，而不是 0% 电量偏低。"""
+    _patch_query(monkeypatch, [EDIFIER_OFF], length=64)
+    reading = read_vendor_query(_edifier_cfg(), _edifier_info())
+
+    assert reading.offline is True
+    assert reading.ok is False
+    assert reading.level is None
+    assert "已关闭" in reading.detail
+
+
+def test_edifier_on_reply_reads_48_percent(monkeypatch):
+    _patch_query(monkeypatch, [EDIFIER_ON], length=64)
+    reading = read_vendor_query(_edifier_cfg(), _edifier_info())
+
+    assert reading.ok is True
+    assert reading.offline is False
+    assert reading.level == 48
+
+
+def test_zero_level_with_the_presence_byte_still_reads_zero(monkeypatch):
+    """电量真的是 0、但状态字节说"在用"：照样报 0%，不许吞掉。"""
+    frame = bytearray(EDIFIER_OFF)
+    frame[5] = 0x01
+    _patch_query(monkeypatch, [bytes(frame)], length=64)
+    reading = read_vendor_query(_edifier_cfg(), _edifier_info())
+
+    assert reading.ok is True
+    assert reading.level == 0
+
+
+def test_nonzero_level_ignores_the_presence_byte(monkeypatch):
+    """电量非 0 时不信那个字节 —— 它到底是"已连接"还是"充电中"还没验证过。"""
+    frame = bytearray(EDIFIER_ON)
+    frame[5] = 0x00
+    _patch_query(monkeypatch, [bytes(frame)], length=64)
+    reading = read_vendor_query(_edifier_cfg(), _edifier_info())
+
+    assert reading.ok is True
+    assert reading.level == 48
+
+
+def test_without_presence_rule_zero_is_just_zero(monkeypatch):
+    """没配 presence 的设备保持原样：0 就是 0，不做额外推断。"""
+    _patch_query(monkeypatch, [EDIFIER_OFF], length=64)
+    reading = read_vendor_query(_edifier_cfg(presence=False), _edifier_info())
+
+    assert reading.ok is True
+    assert reading.level == 0
+
+
+def test_edifier_config_declares_presence_rule():
+    data = json.loads((ROOT / "app" / "config" / "devices.json").read_text(encoding="utf-8"))
+    device = next(d for d in data["devices"] if d["id"] == "edifier-g3max")
+    assert device["protocol"]["presence"] == {"offset": 5, "value": 1}

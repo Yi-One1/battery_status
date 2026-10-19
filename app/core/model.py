@@ -30,6 +30,7 @@ class Reading:
     ok: bool = False
     sleeping: bool = False
     detected: bool = False   # 设备存在但读不到电量，用于区分「未连接」
+    offline: bool = False    # 明确判定为"设备已关闭"：立刻显示未连接，不走离线去抖
     link: str = ""           # LINK_WIRED / LINK_WIRELESS / 未知
 
     @classmethod

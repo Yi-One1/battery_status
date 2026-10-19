@@ -191,6 +191,23 @@ class Monitor(QThread):
                 last_seen=seen,
                 link=reading.link or (previous.link if previous else ""),
             )
+        elif reading.offline:
+            # 明确判定为"设备已关闭"：立刻置为未连接，不走"连续两次失败"的去抖，
+            # 因为这是确定结论，不是一次没读到。
+            self._misses[cfg.id] = 0
+            history.clear()
+            return Snapshot(
+                device_id=cfg.id,
+                level=None,
+                charging=None,
+                online=False,
+                source="none",
+                detail=reading.detail,
+                updated_at=previous.updated_at if previous else 0.0,
+                history=[],
+                sleeping=False,
+                last_seen=seen,
+            )
         else:
             misses = self._misses.get(cfg.id, 0) + 1
             self._misses[cfg.id] = misses
