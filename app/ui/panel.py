@@ -107,6 +107,12 @@ class Panel(QWidget):
         self._backdrop_timer.setInterval(BACKDROP_REFRESH_MS)
         self._backdrop_timer.timeout.connect(self._refresh_backdrop)
 
+        # 拖动时实时刷新玻璃：move 事件很密，用 16ms 定时器节流到约 60fps
+        self._drag_update_timer = QTimer(self)
+        self._drag_update_timer.setInterval(16)
+        self._drag_update_timer.setSingleShot(False)
+        self._drag_update_timer.timeout.connect(self._on_drag_update)
+
     # ------------------------------------------------------------------ 构建
     def _build(self) -> None:
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -302,6 +308,8 @@ class Panel(QWidget):
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            if self.store.prefs.live_glass:
+                self._drag_update_timer.start()
             return False
         if event.type() == QEvent.Type.MouseMove and self._drag_offset is not None:
             if event.buttons() & Qt.MouseButton.LeftButton:
@@ -309,7 +317,13 @@ class Panel(QWidget):
                 return False
         if event.type() == QEvent.Type.MouseButtonRelease:
             self._drag_offset = None
+            self._drag_update_timer.stop()
         return super().eventFilter(obj, event)
+
+    def _on_drag_update(self) -> None:
+        """拖动期间持续重绘，让柔光玻璃按新位置从整屏背景板里取样。"""
+        if self._drag_offset is not None and self.isVisible():
+            self.shell.update()
 
     # ------------------------------------------------------------------ 显示
     def show_panel(self) -> None:
@@ -331,7 +345,11 @@ class Panel(QWidget):
         绘制端按控件的屏幕坐标取像素，所以面板拖动时颜色天然跟着走；
         显示期间由 `_backdrop_timer` 每 15 秒重取一次，换壁纸也能跟上。
         重取时要把面板自己占的那块抹掉（`exclude`），否则每刷一次就白一层。
+
+        ``live_glass=False`` 时只取一次，后续保持固定背景，换壁纸不再自动跟上。
         """
+        if not self.store.prefs.live_glass and self._has_backdrop:
+            return
         exclude = self.frameGeometry().adjusted(-6, -6, 6, 6) if self.isVisible() else None
         backdrop = capture_screen(exclude=exclude)
         if backdrop is None or not backdrop.is_valid():
@@ -401,11 +419,17 @@ class Panel(QWidget):
         super().showEvent(event)
         self._shown_at = time.monotonic()
         self._apply_window_blur()
-        self._backdrop_timer.start()
+        # 固定背景模式下只取一次；实时模式下启动周期性刷新
+        if self.store.prefs.live_glass:
+            self._backdrop_timer.start()
+        elif not self._has_backdrop:
+            self._refresh_backdrop()
+
 
     def hideEvent(self, event) -> None:  # noqa: N802
         # 隐藏后没必要再截屏 —— 低占用的一部分
         self._backdrop_timer.stop()
+        self._drag_update_timer.stop()
         super().hideEvent(event)
 
     def _apply_window_blur(self) -> None:

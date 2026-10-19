@@ -127,6 +127,16 @@ class SettingsPane(QWidget):
 
         column.addWidget(Divider())
 
+        column.addWidget(self._section("外观"))
+        self.live_glass_toggle = ToggleSwitch()
+        self.live_glass_toggle.setChecked(store.prefs.live_glass)
+        self.live_glass_toggle.toggled.connect(self._on_live_glass)
+        column.addWidget(SettingRow(
+            "实时柔光玻璃",
+            "窗口拖动时背景跟着走；关闭则固定为显示时的桌面背景",
+            self.live_glass_toggle,
+        ))
+
         column.addWidget(self._section("不单独设置时，按外设类型取默认外观"))
         for key, type_cfg in registry.types.items():
             column.addWidget(self._type_row(key, type_cfg.label, type_cfg.color))
@@ -496,6 +506,10 @@ class SettingsPane(QWidget):
     def _on_threshold(self, value: int) -> None:
         self.threshold_value.setText(f"{value}%")
         self.store.prefs.low_battery_threshold = value
+        self._commit()
+
+    def _on_live_glass(self, checked: bool) -> None:
+        self.store.prefs.live_glass = checked
         self._commit()
 
     def _on_notify(self, checked: bool) -> None:

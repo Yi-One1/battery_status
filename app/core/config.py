@@ -390,6 +390,8 @@ class Preferences:
     demo: bool = False
     # 设备自动管理（问题3）
     auto_add: bool = True
+    # 玻璃效果（问题2）：实时跟随窗口 / 固定背景
+    live_glass: bool = True
     auto_hide_offline: bool = True
     offline_hide_minutes: int = DEFAULT_OFFLINE_HIDE_MINUTES
 
