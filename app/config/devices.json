@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "_comment": [
     "设备配置：新增外设只需在 devices 数组追加一项，无需改代码。",
     "match            —— 在 HID 设备列表中匹配物理设备（键可省略，省略即不参与过滤）",
@@ -17,7 +17,8 @@
     "    reply_prefix —— 只认以此开头的应答，避免把别的报文当电量",
     "    level_offset —— 电量字节在应答里的下标",
     "  logitech_hidpp.device_name_contains —— 通过 HID++ 0x0005 读到的无线设备名关键字",
-    "options          —— demo_level 仅用于演示模式；notes 为维护备注，不参与运行"
+    "options          —— demo_level 仅用于演示模式；notes 为维护备注，不参与运行",
+    "  protocol.link —— 静态链路声明（wired / wireless）：配的是接收器本身时写 wireless，界面会显示「2.4G 连接」"
   ],
   "types": {
     "mouse": {
@@ -118,7 +119,8 @@
         "reply_prefix": "13 4A 01 00 02",
         "level_offset": 5,
         "timeout_ms": 400,
-        "retries": 2
+        "retries": 2,
+        "link": "wireless"
       },
       "options": {
         "demo_level": 64
@@ -153,7 +155,8 @@
           "value": 1
         },
         "timeout_ms": 300,
-        "retries": 1
+        "retries": 1,
+        "link": "wireless"
       },
       "options": {
         "demo_level": 92

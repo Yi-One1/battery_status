@@ -198,3 +198,48 @@ def test_first_working_path_wins_without_extra_probing(monkeypatch):
     monkeypatch.setattr(protocols, "read_logitech", fake_read)
     read_device(cfg, infos, set())
     assert len(calls) == 1
+
+
+# --------------------------------------------------------------------------- #
+# 配置里的静态链路声明（接收器类设备）
+# --------------------------------------------------------------------------- #
+def _dongle_cfg(link: str = LINK_WIRELESS):
+    from app.core.config import DeviceConfig
+
+    return DeviceConfig(
+        id="edifier-g3max",
+        type="headset",
+        display_name="漫步者 G3 MAX",
+        match={"vid": 0x35BB},
+        protocol={"name": "vendor_query", "command": "D0 {vid_be} 01 00", "link": link},
+    )
+
+
+def test_declared_link_fills_in_when_protocol_has_none(monkeypatch):
+    """配的就是接收器本身，匹配上了就一定是 2.4G，配置里声明一句不算猜。"""
+    monkeypatch.setattr(
+        protocols, "_read_device", lambda cfg, infos, slots: Reading(level=48, ok=True, source="vendor-query")
+    )
+    assert read_device(_dongle_cfg(), [], set()).link == LINK_WIRELESS
+
+
+def test_declared_link_does_not_override_a_known_link(monkeypatch):
+    """HID++ 自己已经说了有线，配置里的 wireless 不能把它盖掉。"""
+    monkeypatch.setattr(
+        protocols, "_read_device", lambda cfg, infos, slots: Reading(level=71, ok=True, link=LINK_WIRED)
+    )
+    assert read_device(_dongle_cfg(), [], set()).link == LINK_WIRED
+
+
+def test_dongle_configs_declare_wireless():
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    data = json.loads((root / "app" / "config" / "devices.json").read_text(encoding="utf-8"))
+    for device_id in ("mchose-g98pro", "edifier-g3max"):
+        device = next(d for d in data["devices"] if d["id"] == device_id)
+        assert device["protocol"]["link"] == "wireless"
+    mouse = next(d for d in data["devices"] if d["id"] == "logitech-gpx-superlight")
+    # 鼠标的链路是运行时判定的，配置里不能预先声明
+    assert "link" not in mouse["protocol"]

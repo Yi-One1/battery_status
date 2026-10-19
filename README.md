@@ -143,6 +143,7 @@ Windows 就固定报"满"档，`XInputGetCapabilities` 的 `Flags` 里也没有 
   "reply_prefix": "13 4A 01 00 02", // 只认以此开头的应答
   "level_offset": 5,                // 电量在第 6 字节
   "presence": { "offset": 5, "value": 1 },  // 可选：电量 0 且该字节≠1 时判为「设备已关闭」
+  "link": "wireless",               // 静态链路声明：配的是接收器本身，状态行写「2.4G 连接」
   "timeout_ms": 400, "retries": 2
 }
 ```

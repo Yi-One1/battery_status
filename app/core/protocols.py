@@ -576,6 +576,15 @@ def read_vendor_query(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
 # 统一入口
 # --------------------------------------------------------------------------- #
 def read_device(cfg: DeviceConfig, infos: list[HidDeviceInfo], used_slots: Optional[set[int]] = None) -> Reading:
+    reading = _read_device(cfg, infos, used_slots)
+    # 协议自己知道链路（HID++ 的索引 0xFF 就是有线），不知道的由配置补一句静态声明：
+    # 迈从/漫步者配的是接收器本身，匹配上了就一定是 2.4G，这么说并不算猜。
+    if not reading.link:
+        reading.link = str(cfg.protocol.get("link", "") or "")
+    return reading
+
+
+def _read_device(cfg: DeviceConfig, infos: list[HidDeviceInfo], used_slots: Optional[set[int]] = None) -> Reading:
     try:
         name = cfg.protocol_name
         if name == "logitech_hidpp":
