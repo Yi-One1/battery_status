@@ -44,6 +44,9 @@ class Snapshot:
     updated_at: float = 0.0
     history: list[int] = field(default_factory=list)
     sleeping: bool = False
+    # 最后一次"看见"这台设备的时间（读成功、检测到、或休眠都算）。
+    # updated_at 只在读到电量时前进，用它判断断连会把"一直读不到电量"的设备误判成离线。
+    last_seen: float = 0.0
 
     @property
     def source_label(self) -> str:

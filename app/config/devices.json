@@ -45,7 +45,8 @@
       "match": {
         "vid": 1133,
         "product_contains": [
-          "receiver"
+          "receiver",
+          "pro x wireless"
         ]
       },
       "protocol": {
@@ -60,7 +61,7 @@
       "options": {
         "demo_level": 87
       },
-      "notes": "实测：C547 接收器 20 字节接口必须用长报文 0x11，鼠标在设备索引 1，新固件只有 0x1004 统一电量（feature index 6），fn1 返回 [电量%, 状态, 充电类型]。鼠标休眠时无应答，属正常现象。"
+      "notes": "实测：接收器(C547)与有线(C094)是同一个鼠标的两种形态，product_string 分别是 USB Receiver / PRO X Wireless，必须两个都匹配，否则插线充电时会被当成另一台设备。接收器的 20 字节接口要用长报文 0x11，鼠标在设备索引 1；有线模式则直接以索引 0xFF 出现在 HID++ 通道上。新固件只有 0x1004 统一电量，fn1 返回 [电量%, 状态, 充电类型]。休眠时无应答属正常。"
     },
     {
       "id": "flydigi-apex4",

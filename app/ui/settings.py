@@ -1,6 +1,7 @@
-"""设置页：颜色 / 样式 / 托盘 / 刷新间隔 / 自启动。"""
+"""设置页：设备清单 / 颜色 / 样式 / 托盘 / 刷新间隔 / 自启动。"""
 from __future__ import annotations
 
+import logging
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt, Signal
@@ -16,11 +17,19 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import autostart
-from ..core.config import DeviceRegistry, SettingsStore
+from ..core.config import DeviceConfig, DeviceRegistry, SettingsStore
 from . import theme
-from .glass import ColorSwatch, Divider, SegmentedControl, ToggleSwitch
+from .add_device import AddDeviceDialog
+from .glass import ColorSwatch, Divider, PillButton, SegmentedControl, ToggleSwitch
+
+log = logging.getLogger(__name__)
 
 STYLE_OPTIONS = [("ring", "环形"), ("bar", "条状"), ("number", "数字")]
+
+# 自动收起断连设备的可选时长（分钟）
+OFFLINE_OPTIONS = [("5", "5 分钟"), ("10", "10 分钟"), ("30", "30 分钟"), ("60", "1 小时")]
+
+SOURCE_LABELS = {"builtin": "内置", "user": "手动添加", "auto": "自动发现"}
 
 
 def _label(text: str, size: float = 12.0, weight: int = 500, color: str = theme.TEXT_PRIMARY) -> QLabel:
@@ -52,12 +61,14 @@ class SettingRow(QWidget):
 
 class SettingsPane(QWidget):
     changed = Signal()
+    devices_changed = Signal()
 
     def __init__(self, registry: DeviceRegistry, store: SettingsStore, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.registry = registry
         self.store = store
         self._building = True
+        self._device_rows: dict[str, QWidget] = {}
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         outer = QVBoxLayout(self)
@@ -76,6 +87,41 @@ class SettingsPane(QWidget):
         column = QVBoxLayout(content)
         column.setContentsMargins(20, 2, 14, 26)
         column.setSpacing(2)
+
+        # ---- 设备清单（问题3）----
+        column.addWidget(self._section("设备"))
+        self._device_holder = QWidget()
+        self._device_holder.setStyleSheet("background: transparent;")
+        self._device_layout = QVBoxLayout(self._device_holder)
+        self._device_layout.setContentsMargins(0, 0, 0, 0)
+        self._device_layout.setSpacing(1)
+        column.addWidget(self._device_holder)
+        column.addWidget(self._build_restore_row())
+        self._rebuild_device_rows()
+
+        self.add_button = PillButton("添加设备…", tone="accent", height=26)
+        self.add_button.setMinimumWidth(92)
+        self.add_button.clicked.connect(self._open_add_dialog)
+        column.addWidget(SettingRow("新增外设", "从检测到的设备里点选，或按 VID/PID 手动填写", self.add_button))
+
+        self.auto_add_toggle = ToggleSwitch()
+        self.auto_add_toggle.setChecked(store.prefs.auto_add)
+        self.auto_add_toggle.toggled.connect(self._on_auto_add)
+        column.addWidget(SettingRow("自动新增设备", "扫到未登记的外设时自动补一张卡片", self.auto_add_toggle))
+
+        self.auto_hide_toggle = ToggleSwitch()
+        self.auto_hide_toggle.setChecked(store.prefs.auto_hide_offline)
+        self.auto_hide_toggle.toggled.connect(self._on_auto_hide)
+        column.addWidget(SettingRow("自动收起断连设备", "断开超过设定时长就不再占位，重新连上会自动回来", self.auto_hide_toggle))
+
+        self.offline_picker = SegmentedControl(OFFLINE_OPTIONS, height=24)
+        self.offline_picker.setFixedWidth(202)
+        self.offline_picker.set_value(self._offline_key(store.prefs.offline_hide_minutes))
+        self.offline_picker.changed.connect(self._on_offline_minutes)
+        self._offline_row = SettingRow("断连多久后收起", "只影响显示，不会删除配置", self.offline_picker)
+        column.addWidget(self._offline_row)
+
+        column.addWidget(Divider())
 
         column.addWidget(self._section("每类外设的颜色与样式"))
         for key, type_cfg in registry.types.items():
@@ -194,7 +240,151 @@ class SettingsPane(QWidget):
         layout.addWidget(segmented, 0, Qt.AlignmentFlag.AlignVCenter)
         return holder
 
+    # -- 设备清单 -----------------------------------------------------------
+    def device_widgets(self) -> dict[str, QWidget]:
+        """当前展示的设备行（测试与调试用）。"""
+        return dict(self._device_rows)
+
+    def _build_restore_row(self) -> QWidget:
+        """删除是可逆的：被移除的设备（含内置）都在这里等着撤销。"""
+        box = QWidget()
+        box.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(0, 3, 0, 3)
+        layout.setSpacing(8)
+        self._restore_label = _label("", 10.5, 400, theme.TEXT_TERTIARY)
+        layout.addWidget(self._restore_label, 1)
+        self._restore_button = PillButton("恢复", tone="neutral", height=22)
+        self._restore_button.clicked.connect(self.restore_removed)
+        layout.addWidget(self._restore_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._restore_box = box
+        box.setVisible(False)
+        return box
+
+    def _sync_restore_row(self) -> None:
+        removed = self.registry.removed_ids()
+        if not hasattr(self, "_restore_box"):
+            return
+        if not removed:
+            self._restore_box.setVisible(False)
+            return
+        names = []
+        for device_id in removed[:2]:
+            cfg = next((d for d in self.registry.known_devices() if d.id == device_id), None)
+            names.append(cfg.display_name if cfg else device_id)
+        more = f" 等 {len(removed)} 台" if len(removed) > 2 else ""
+        self._restore_label.setText(f"已移除 {'、'.join(names)}{more}")
+        self._restore_box.setVisible(True)
+
+    def restore_removed(self) -> int:
+        """撤销全部删除操作，返回恢复的数量。"""
+        removed = self.registry.removed_ids()
+        if not removed:
+            return 0
+        for device_id in removed:
+            self.registry.restore_device(device_id, persist=False)
+        self.registry.save_user_config()
+        log.info("恢复 %d 台被移除的设备", len(removed))
+        self._rebuild_device_rows()
+        self.devices_changed.emit()
+        return len(removed)
+
+    def _rebuild_device_rows(self) -> None:
+        while self._device_layout.count():
+            item = self._device_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._device_rows.clear()
+
+        devices = self.registry.enabled_devices()
+        if not devices:
+            self._device_layout.addWidget(
+                _label("清单为空。点右下角「添加设备…」挑一台。", 11.0, 400, theme.TEXT_TERTIARY)
+            )
+        else:
+            for cfg in devices:
+                row = self._device_row(cfg)
+                self._device_layout.addWidget(row)
+                self._device_rows[cfg.id] = row
+        self._sync_restore_row()
+
+    def _device_row(self, cfg: DeviceConfig) -> QWidget:
+        holder = QWidget()
+        holder.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(holder)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(8)
+
+        type_cfg = self.registry.type_of(cfg)
+        text_box = QVBoxLayout()
+        text_box.setContentsMargins(0, 0, 0, 0)
+        text_box.setSpacing(1)
+        text_box.addWidget(_label(cfg.display_name, 12.0, 500))
+        source = SOURCE_LABELS.get(cfg.source, cfg.source)
+        text_box.addWidget(_label(f"{type_cfg.label} · {source}", 10.0, 400, theme.TEXT_TERTIARY))
+        layout.addLayout(text_box, 1)
+
+        dot = ColorSwatch(self.store.prefs.color_for(cfg.type), diameter=14)
+        dot.setToolTip(f"当前颜色 {self.store.prefs.color_for(cfg.type)}")
+        layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        remove = PillButton("移除", tone="danger")
+        remove.setToolTip(f"从清单里删除「{cfg.display_name}」")
+        remove.clicked.connect(lambda _=False, did=cfg.id: self.remove_device(did))
+        layout.addWidget(remove, 0, Qt.AlignmentFlag.AlignVCenter)
+        return holder
+
+    def remove_device(self, device_id: str) -> bool:
+        """删除设备（内置设备写墓碑，用户设备可再恢复）。"""
+        cfg = self.registry.get(device_id)
+        if cfg is None:
+            return False
+        if not self.registry.remove_device(device_id):
+            return False
+        log.info("用户移除设备 %s", device_id)
+        self._rebuild_device_rows()
+        self.devices_changed.emit()
+        return True
+
+    def refresh_devices(self) -> None:
+        """外部（自动新增 / 删除）改动清单后回填。"""
+        self._rebuild_device_rows()
+
+    def _open_add_dialog(self) -> None:
+        dialog = AddDeviceDialog(self.registry, self.window())
+        dialog.device_added.connect(self._on_device_added)
+        dialog.exec()
+
+    def _on_device_added(self, cfg: DeviceConfig) -> None:
+        log.info("新增设备 %s", cfg.id)
+        self._rebuild_device_rows()
+        self.devices_changed.emit()
+
+    @staticmethod
+    def _offline_key(minutes: int) -> str:
+        options = [int(key) for key, _ in OFFLINE_OPTIONS]
+        nearest = min(options, key=lambda value: abs(value - int(minutes)))
+        return str(nearest)
+
     # -- 交互 ---------------------------------------------------------------
+    def _on_auto_add(self, checked: bool) -> None:
+        self.store.prefs.auto_add = checked
+        self._commit()
+
+    def _on_auto_hide(self, checked: bool) -> None:
+        self.store.prefs.auto_hide_offline = checked
+        self.offline_picker.setEnabled(checked)
+        self._commit()
+
+    def _on_offline_minutes(self, value: str) -> None:
+        try:
+            self.store.prefs.offline_hide_minutes = max(1, int(value))
+        except (TypeError, ValueError):
+            return
+        self._commit()
+
     def _pick_color(self, key: str, swatch: ColorSwatch) -> None:
         current = QColor(self.store.prefs.color_for(key))
         dialog = QColorDialog(current, self.window())

@@ -1,4 +1,17 @@
-"""配置层：设备清单（只读模板 + 用户覆盖）与偏好设置（可写）。"""
+"""配置层：设备清单（内置模板 + 用户层 + 墓碑）与偏好设置（可写）。
+
+设备清单分三层，职责清晰：
+
+1. **内置模板** ``app/config/devices.json``
+   随程序升级一起更新，是"出厂默认"。用户不该直接改它。
+2. **用户层** ``%APPDATA%/BatteryGlass/devices.json``
+   程序写入。里面有三样东西：
+   * ``devices`` —— 用户新增的设备（``source`` = user / auto）
+   * ``removed`` —— 墓碑列表。删掉一台内置设备后，它的 id 记在这里，
+     否则下次启动重新读内置模板又会把它变回来。
+   * ``types``   —— 设备类型的外观覆盖（颜色/样式）
+3. **运行时视图** ``self.devices`` —— 前两层合并、剔除墓碑后的最终清单。
+"""
 from __future__ import annotations
 
 import copy
@@ -15,6 +28,14 @@ log = logging.getLogger(__name__)
 DEFAULT_TRAY_MODE = "per-device"
 STYLES = ("ring", "bar", "number")
 
+SOURCE_BUILTIN = "builtin"
+SOURCE_USER = "user"
+SOURCE_AUTO = "auto"
+
+USER_SCHEMA_VERSION = "1"
+
+DEFAULT_OFFLINE_HIDE_MINUTES = 10
+
 
 # --------------------------------------------------------------------------- #
 # 设备配置
@@ -30,6 +51,7 @@ class DeviceConfig:
     protocol: dict[str, Any] = field(default_factory=dict)
     options: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
+    source: str = SOURCE_BUILTIN
 
     @property
     def protocol_name(self) -> str:
@@ -38,6 +60,28 @@ class DeviceConfig:
     @property
     def demo_level(self) -> int:
         return int(self.options.get("demo_level", 70))
+
+    @property
+    def is_user_device(self) -> bool:
+        return self.source in (SOURCE_USER, SOURCE_AUTO)
+
+    def to_raw(self) -> dict[str, Any]:
+        """序列化回 devices.json 的条目形态（省略空字段，便于人读）。"""
+        raw: dict[str, Any] = {
+            "id": self.id,
+            "type": self.type,
+            "display_name": self.display_name,
+            "enabled": bool(self.enabled),
+            "match": copy.deepcopy(self.match),
+            "protocol": copy.deepcopy(self.protocol),
+            "options": copy.deepcopy(self.options),
+            "source": self.source,
+        }
+        if self.subtitle:
+            raw["subtitle"] = self.subtitle
+        if self.notes:
+            raw["notes"] = self.notes
+        return raw
 
 
 @dataclass
@@ -67,47 +111,84 @@ def _int_list(value: Any) -> list[int]:
 
 
 class DeviceRegistry:
-    """设备清单。内置 app/config/devices.json，用户可在
-    %APPDATA%/PeripheralBattery/devices.json 追加或覆盖同名条目。"""
+    """设备清单：内置模板 + 用户层，支持新增 / 删除 / 恢复。"""
 
-    def __init__(self) -> None:
+    def __init__(self, config_dir: Path | None = None, user_dir: Path | None = None) -> None:
+        self.config_dir = Path(config_dir) if config_dir is not None else bundled_config_dir()
+        self.user_dir = Path(user_dir) if user_dir is not None else user_data_dir()
         self.types: dict[str, TypeConfig] = {}
         self.devices: list[DeviceConfig] = []
         self.version = "0"
+        self._bundled_devices: list[DeviceConfig] = []
+        self._bundled_types: dict[str, TypeConfig] = {}
+        self._user_raw: dict[str, dict[str, Any]] = {}
+        self._user_types: dict[str, Any] = {}
+        self._removed: list[str] = []
         self.reload()
+
+    @property
+    def user_config_path(self) -> Path:
+        return self.user_dir / "devices.json"
 
     # -- 加载 ---------------------------------------------------------------
     def reload(self) -> None:
         data: dict[str, Any] = {}
-        bundled = bundled_config_dir() / "devices.json"
+        bundled = self.config_dir / "devices.json"
         if bundled.exists():
             data = self._read_json(bundled)
         else:
             log.error("内置设备配置缺失：%s", bundled)
         self.version = str(data.get("version", "0"))
-        self.types = self._parse_types(data.get("types") or {})
-        self.devices = self._parse_devices(data.get("devices") or [])
+        self._bundled_types = self._parse_types(data.get("types") or {})
+        self._bundled_devices = self._parse_devices(data.get("devices") or [])
 
-        override = user_data_dir() / "devices.json"
-        if override.exists():
-            extra = self._read_json(override)
-            log.info("加载用户设备覆盖：%s", override)
-            for key, value in (extra.get("types") or {}).items():
-                base = self.types.get(key)
-                merged = {
-                    "label": (base.label if base else key),
-                    "color": (base.color if base else "#0A84FF"),
-                    "style": (base.style if base else "ring"),
-                }
-                merged.update(value or {})
-                self.types[key] = TypeConfig(key, str(merged["label"]), str(merged["color"]), str(merged["style"]))
-            by_id = {d.id: d for d in self.devices}
+        self._user_raw = {}
+        self._user_types = {}
+        self._removed = []
+        path = self.user_config_path
+        if path.exists():
+            extra = self._read_json(path)
+            log.info("加载用户设备配置：%s", path)
+            self._user_types = dict(extra.get("types") or {})
+            self._removed = [str(item) for item in (extra.get("removed") or []) if str(item)]
             for raw in extra.get("devices") or []:
-                cfg = self._parse_device(raw)
-                if cfg is None:
+                if not isinstance(raw, dict) or not raw.get("id"):
                     continue
-                by_id[cfg.id] = cfg
-            self.devices = list(by_id.values())
+                device_id = str(raw["id"])
+                self._user_raw[device_id] = {**raw, "source": str(raw.get("source") or SOURCE_USER)}
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        """把「内置 + 用户 - 墓碑」合成为运行时视图，不碰磁盘。"""
+        types = dict(self._bundled_types)
+        for key, value in self._user_types.items():
+            base = types.get(key)
+            merged = {
+                "label": (base.label if base else key),
+                "color": (base.color if base else "#0A84FF"),
+                "style": (base.style if base else "ring"),
+            }
+            merged.update(value or {})
+            style = str(merged["style"])
+            if style not in STYLES:
+                style = base.style if base else "ring"
+            types[key] = TypeConfig(key, str(merged["label"]), str(merged["color"]), style)
+        self.types = types
+
+        removed = set(self._removed)
+        merged_devices: dict[str, DeviceConfig] = {}
+        for cfg in self._bundled_devices:
+            if cfg.id in removed:
+                continue
+            merged_devices[cfg.id] = cfg
+        for device_id, raw in self._user_raw.items():
+            if device_id in removed:
+                continue
+            cfg = self._parse_device(raw, default_source=SOURCE_USER)
+            if cfg is None:
+                continue
+            merged_devices[device_id] = cfg
+        self.devices = list(merged_devices.values())
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
@@ -138,9 +219,12 @@ class DeviceRegistry:
                 out.append(cfg)
         return out
 
-    def _parse_device(self, item: Any) -> DeviceConfig | None:
+    def _parse_device(self, item: Any, default_source: str = SOURCE_BUILTIN) -> DeviceConfig | None:
         if not isinstance(item, dict) or not item.get("id"):
             return None
+        source = str(item.get("source") or default_source)
+        if source not in (SOURCE_BUILTIN, SOURCE_USER, SOURCE_AUTO):
+            source = default_source
         return DeviceConfig(
             id=str(item["id"]),
             type=str(item.get("type") or "mouse"),
@@ -151,9 +235,10 @@ class DeviceRegistry:
             protocol=dict(item.get("protocol") or {}),
             options=dict(item.get("options") or {}),
             notes=str(item.get("notes") or ""),
+            source=source,
         )
 
-    # -- 匹配 ---------------------------------------------------------------
+    # -- 查询 ---------------------------------------------------------------
     def enabled_devices(self) -> list[DeviceConfig]:
         return [d for d in self.devices if d.enabled]
 
@@ -166,6 +251,101 @@ class DeviceRegistry:
     def type_of(self, device: DeviceConfig) -> TypeConfig:
         return self.types.get(device.type) or TypeConfig(device.type, device.type, "#0A84FF", "ring")
 
+    def type_options(self) -> list[tuple[str, str]]:
+        return [(key, cfg.label) for key, cfg in self.types.items()]
+
+    def is_builtin(self, device_id: str) -> bool:
+        return any(d.id == device_id for d in self._bundled_devices)
+
+    def is_removed(self, device_id: str) -> bool:
+        return device_id in self._removed
+
+    def removed_ids(self) -> list[str]:
+        return list(self._removed)
+
+    def exists(self, device_id: str) -> bool:
+        return self.get(device_id) is not None or self.is_builtin(device_id)
+
+    def known_devices(self) -> list[DeviceConfig]:
+        """含"墓碑"条目的全量清单。
+
+        用途是判断"这台硬件我们到底认不认识"：用户把迈从删掉之后，
+        它的接收器仍然是同一台硬件，自动发现不该把它当成新设备再加一遍。
+        """
+        out: list[DeviceConfig] = list(self._bundled_devices)
+        for raw in self._user_raw.values():
+            cfg = self._parse_device(raw, default_source=SOURCE_USER)
+            if cfg is not None:
+                out.append(cfg)
+        return out
+
+    # -- 写入 ---------------------------------------------------------------
+    def add_device(self, cfg: DeviceConfig, *, persist: bool = True) -> DeviceConfig:
+        """新增或覆盖一条设备；同 id 的内置设备会被用户版本覆盖而不是叠加。"""
+        # 新 id 却顶着 builtin 标签的话，说明是代码里直接构造的，补成 user
+        if cfg.source not in (SOURCE_USER, SOURCE_AUTO) and not self.is_builtin(cfg.id):
+            cfg.source = SOURCE_USER
+        raw = cfg.to_raw()
+        self._user_raw[cfg.id] = raw
+        self._removed = [item for item in self._removed if item != cfg.id]
+        self._rebuild()
+        if persist:
+            self.save_user_config()
+        log.info("新增设备 %s（%s）", cfg.id, cfg.display_name)
+        return self.get(cfg.id) or cfg
+
+    def remove_device(self, device_id: str, *, persist: bool = True) -> bool:
+        """删除设备。内置设备写墓碑，用户设备连定义一起留在文件里以便恢复。"""
+        if not self.exists(device_id):
+            return False
+        if device_id not in self._removed:
+            self._removed.append(device_id)
+        self._rebuild()
+        if persist:
+            self.save_user_config()
+        log.info("删除设备 %s", device_id)
+        return True
+
+    def restore_device(self, device_id: str, *, persist: bool = True) -> bool:
+        """撤销删除（恢复内置默认，或把之前删掉的用户设备找回来）。"""
+        if device_id not in self._removed:
+            return False
+        self._removed.remove(device_id)
+        self._rebuild()
+        if persist:
+            self.save_user_config()
+        return True
+
+    def set_enabled(self, device_id: str, enabled: bool, *, persist: bool = True) -> bool:
+        cfg = self.get(device_id)
+        if cfg is None:
+            return False
+        cfg.enabled = bool(enabled)
+        self._user_raw[device_id] = cfg.to_raw()
+        self._rebuild()
+        if persist:
+            self.save_user_config()
+        return True
+
+    def save_user_config(self) -> bool:
+        payload = {
+            "schema": 1,
+            "version": USER_SCHEMA_VERSION,
+            "devices": [copy.deepcopy(raw) for raw in self._user_raw.values()],
+            "types": copy.deepcopy(self._user_types),
+            "removed": list(dict.fromkeys(self._removed)),
+        }
+        try:
+            self.user_dir.mkdir(parents=True, exist_ok=True)
+            tmp = self.user_config_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self.user_config_path)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.error("保存用户设备配置失败：%s", exc)
+            return False
+
+    # -- 匹配 ---------------------------------------------------------------
     @staticmethod
     def matches(info: Any, match: dict[str, Any]) -> bool:
         """按 match 规则判断一条 HID 设备信息是否命中。"""
@@ -205,6 +385,10 @@ class Preferences:
     notifications: bool = True
     glass_blur: bool = False
     demo: bool = False
+    # 设备自动管理（问题3）
+    auto_add: bool = True
+    auto_hide_offline: bool = True
+    offline_hide_minutes: int = DEFAULT_OFFLINE_HIDE_MINUTES
 
     # -- 序列化 -------------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
@@ -230,6 +414,7 @@ class Preferences:
                 setattr(prefs, key, str(value))
         prefs.refresh_seconds = max(10, min(600, prefs.refresh_seconds))
         prefs.low_battery_threshold = max(0, min(90, prefs.low_battery_threshold))
+        prefs.offline_hide_minutes = max(1, min(720, prefs.offline_hide_minutes))
         if prefs.tray_mode not in ("per-device", "merged"):
             prefs.tray_mode = DEFAULT_TRAY_MODE
         prefs.sanitize_types(registry)
@@ -253,9 +438,9 @@ class Preferences:
 class SettingsStore:
     """偏好设置读写（JSON）。"""
 
-    def __init__(self, registry: DeviceRegistry) -> None:
+    def __init__(self, registry: DeviceRegistry, path: Path | None = None) -> None:
         self.registry = registry
-        self.path = user_data_dir() / "preferences.json"
+        self.path = Path(path) if path is not None else registry.user_dir / "preferences.json"
         self.prefs = self.load()
 
     def load(self) -> Preferences:
@@ -269,6 +454,7 @@ class SettingsStore:
 
     def save(self) -> None:
         try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(self.prefs.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(self.path)

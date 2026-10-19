@@ -20,9 +20,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.config import DeviceRegistry, SettingsStore
+from ..core.discovery import build_device_config
 from ..core.model import Snapshot
 from ..core.monitor import Monitor
 from ..core.paths import resource_root
+from ..core.presence import filter_visible, hidden_devices
 from . import theme, winblur
 from .cards import DeviceCard
 from .glass import GlassSurface, IconButton, apply_shadow, paint_glass
@@ -75,6 +77,7 @@ class Panel(QWidget):
         self._first_show = True
         self._shown_at = 0.0
         self._build()
+        self.monitor.discovered.connect(self._on_discovered)
 
         self._hotplug = QTimer(self)
         self._hotplug.setSingleShot(True)
@@ -110,6 +113,7 @@ class Panel(QWidget):
         self.stack.addWidget(self._build_devices_page())
         self.settings = SettingsPane(self.registry, self.store, self.stack)
         self.settings.changed.connect(self._on_settings_changed)
+        self.settings.devices_changed.connect(self._on_devices_changed)
         self.stack.addWidget(self.settings)
         column.addWidget(self.stack, 1)
 
@@ -205,6 +209,10 @@ class Panel(QWidget):
     def _card_width(self) -> int:
         return (CONTENT_WIDTH - 2 * PAGE_PADDING - CARD_GAP) // 2
 
+    def visible_devices(self) -> list:
+        """当前该占位的设备：已启用，且没有因断连过久被自动收起。"""
+        return filter_visible(self.registry.enabled_devices(), self._snapshots, self.store.prefs)
+
     def _rebuild_cards(self) -> None:
         for card in self._cards.values():
             self.grid.removeWidget(card)
@@ -212,7 +220,7 @@ class Panel(QWidget):
             card.deleteLater()
         self._cards.clear()
 
-        devices = self.registry.enabled_devices()
+        devices = self.visible_devices()
         for index, cfg in enumerate(devices):
             type_cfg = self.registry.type_of(cfg)
             card = DeviceCard(
@@ -231,11 +239,18 @@ class Panel(QWidget):
                 card.apply_snapshot(snapshot, self.store.prefs.low_battery_threshold)
         self._resize_for_rows()
 
+    def _sync_visibility(self) -> None:
+        """断连超时的设备该收起、重新上线的该回来 —— 只有集合真的变了才重建界面。"""
+        expected = [cfg.id for cfg in self.visible_devices()]
+        if expected != list(self._cards.keys()):
+            log.debug("可见设备变化：%s -> %s", list(self._cards.keys()), expected)
+            self._rebuild_cards()
+
     def _resize_for_rows(self) -> None:
         rows = max(1, (len(self._cards) + 1) // 2)
         if self._settings_open:
-            # 设置页内容较长，临时拉高窗口，减少滚动
-            page_height = 486
+            # 设置页内容较长（设备清单 + 各类外观），临时拉高窗口，减少滚动
+            page_height = 540
         else:
             page_height = rows * CARD_HEIGHT + (rows - 1) * CARD_GAP + 12
         height = HEADER_HEIGHT + page_height + FOOTER_HEIGHT
@@ -390,10 +405,41 @@ class Panel(QWidget):
         self.monitor.set_prefs(self.store.prefs)
         if self._snapshots:
             self.apply_snapshots(self._snapshots)
+        else:
+            self._sync_visibility()
+        self.tray.update_snapshots(self._snapshots)
+
+    def _on_devices_changed(self) -> None:
+        """设置页新增/删除了设备。"""
+        self._rebuild_cards()
+        self._resize_for_rows()
+        if not self._first_show:
+            self._keep_in_screen()
+        self._update_subtitle()
+        self._update_footer(self._snapshots)
+        self.tray.update_snapshots(self._snapshots)
+        self.monitor.refresh()
+
+    def _on_discovered(self, devices: list) -> None:
+        """监测线程扫到未登记的设备 —— 配置落盘只能在 UI 线程做，所以在这里收口。"""
+        added = []
+        for device in devices:
+            base_id = device.default_id
+            if self.registry.is_removed(base_id) or self.registry.get(base_id) is not None:
+                continue
+            cfg = build_device_config(device, base_id)
+            self.registry.add_device(cfg)
+            added.append(cfg)
+        if not added:
+            return
+        log.info("自动登记 %d 台设备：%s", len(added), ", ".join(c.display_name for c in added))
+        self.settings.refresh_devices()
+        self._on_devices_changed()
 
     # ------------------------------------------------------------------ 数据
     def apply_snapshots(self, snapshots: dict[str, Snapshot]) -> None:
         self._snapshots = snapshots
+        self._sync_visibility()
         threshold = self.store.prefs.low_battery_threshold
         for device_id, snapshot in snapshots.items():
             card = self._cards.get(device_id)
@@ -405,16 +451,21 @@ class Panel(QWidget):
 
     def _update_subtitle(self, snapshots: Optional[dict[str, Snapshot]] = None) -> None:
         if self._settings_open:
-            self.subtitle.setText("颜色、样式、托盘与启动项")
+            self.subtitle.setText("设备清单、颜色、样式与启动项")
             return
         snapshots = snapshots if snapshots is not None else self._snapshots
+        visible_ids = set(self._cards)
         total = len(self._cards)
-        online = sum(1 for s in snapshots.values() if s.online)
-        read = sum(1 for s in snapshots.values() if s.level is not None)
+        online = sum(1 for did, s in snapshots.items() if did in visible_ids and s.online)
+        read = sum(1 for did, s in snapshots.items() if did in visible_ids and s.level is not None)
+        hidden = len(hidden_devices(self.registry.enabled_devices(), snapshots, self.store.prefs))
         if total == 0:
-            self.subtitle.setText("没有启用的设备")
+            self.subtitle.setText(f"{hidden} 台设备均已断开" if hidden else "没有启用的设备")
             return
-        self.subtitle.setText(f"{total} 台设备 · {online} 台在线 · {read} 台可读电量")
+        text = f"{total} 台设备 · {online} 台在线 · {read} 台可读电量"
+        if hidden:
+            text += f" · {hidden} 台已收起"
+        self.subtitle.setText(text)
 
     def _update_footer(self, snapshots: dict[str, Snapshot]) -> None:
         recent = max((s.updated_at for s in snapshots.values() if s.updated_at), default=0.0)
@@ -434,8 +485,9 @@ class Panel(QWidget):
             self.chip.show()
             return
 
+        visible_ids = set(self._cards)
         total = len(self._cards)
-        read = sum(1 for s in snapshots.values() if s.level is not None)
+        read = sum(1 for did, s in snapshots.items() if did in visible_ids and s.level is not None)
         if total and read < total:
             self.chip.setText(f"{total - read} 台暂无电量")
             self.chip.setStyleSheet(

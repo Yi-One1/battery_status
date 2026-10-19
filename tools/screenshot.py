@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPixmap, QRadialGradient
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QScrollArea
 
 from app.core.config import DeviceRegistry, SettingsStore
 from app.core.monitor import Monitor
@@ -73,8 +73,10 @@ def blurred_shadow(width: int, height: int, radius: float, blur: int, color: QCo
     )
 
 
-def composite(panel: Panel, out_path: Path, wallpaper: QPixmap) -> None:
+def composite(panel: Panel, out_path: Path, extra_w: int = 408, extra_h: int = 180) -> None:
+    # 先抓图再按真实尺寸生成壁纸：设置页会把窗口拉高，事先算好的尺寸会对不齐
     shot = panel.grab()
+    wallpaper = make_wallpaper(shot.width() + extra_w, shot.height() + extra_h)
     canvas = wallpaper.copy()
     painter = QPainter(canvas)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -92,7 +94,7 @@ def composite(panel: Panel, out_path: Path, wallpaper: QPixmap) -> None:
     painter.drawPixmap(QPoint(int(x), int(y)), shot)
     painter.end()
     canvas.save(str(out_path), "PNG")
-    print("saved", out_path)
+    print("saved", out_path, shot.width(), "x", shot.height())
 
 
 def main() -> int:
@@ -106,8 +108,12 @@ def main() -> int:
     app.setFont(theme.font(12))
     app.setStyleSheet(theme.app_stylesheet())
 
-    registry = DeviceRegistry()
-    store = SettingsStore(registry)
+    # 预览图必须可复现：用临时用户目录，既不受本机增删设备影响，也不会写坏真实配置
+    import tempfile
+
+    sandbox = Path(tempfile.mkdtemp(prefix="batterygass-shot-"))
+    registry = DeviceRegistry(user_dir=sandbox)
+    store = SettingsStore(registry, path=sandbox / "preferences.json")
     store.prefs.demo = not live
     monitor = Monitor(registry, store.prefs, demo=not live)
     tray = TrayController(registry, store)
@@ -139,17 +145,20 @@ def main() -> int:
         panel.apply_snapshots(snaps)
         panel.show_panel()
 
-    wallpaper = make_wallpaper(880, 660)
-
     suffix = "" if live else "-demo"
 
     def shoot_main() -> None:
-        composite(panel, out_dir / f"panel{suffix}.png", wallpaper)
+        composite(panel, out_dir / f"panel{suffix}.png")
         panel._toggle_settings()
-        QTimer.singleShot(500, shoot_settings)
+        QTimer.singleShot(700, shoot_settings)
 
     def shoot_settings() -> None:
-        composite(panel, out_dir / f"settings{suffix}.png", wallpaper)
+        # 设置页比主面板高得多，且默认可能因为焦点落到下方控件而自动滚动，
+        # 截图前先回到顶部，保证预览图总是同一副样子
+        for area in panel.settings.findChildren(QScrollArea):
+            area.verticalScrollBar().setValue(0)
+        app.processEvents()
+        composite(panel, out_dir / f"settings{suffix}.png", extra_w=288, extra_h=180)
         app.quit()
 
     QTimer.singleShot(3000 if live else 900, shoot_main)

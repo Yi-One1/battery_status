@@ -228,6 +228,23 @@ _HIDPP_CACHE: dict[str, tuple[float, HidppProbe]] = {}
 _HIDPP_CACHE_TTL = 300.0
 
 
+def _probe_wired(session: HidppSession) -> Optional[HidppDevice]:
+    """有线模式：HID++ 通道本身就是设备，索引固定 0xFF。
+
+    只在 1~6 号索引都没找到设备时才试。必须把超时也兜住 ——
+    get_feature 只捕获 HidppError，HidppTimeout 会直接抛出去，
+    不接的话"鼠标休眠"就会变成"读取异常"。
+    """
+    try:
+        unified = session.get_feature(0xFF, FEATURE_UNIFIED_BATTERY)
+        status = 0 if unified else session.get_feature(0xFF, FEATURE_BATTERY_STATUS)
+    except (HidppError, HidppTimeout):
+        return None
+    if not (unified or status):
+        return None
+    return HidppDevice(index=0xFF, name=session.device_name(0xFF), wired=True)
+
+
 def hidpp_probe(session: HidppSession, path: bytes, force: bool = False) -> HidppProbe:
     key = path.decode("utf-8", "ignore")
     now = time.monotonic()
@@ -244,13 +261,10 @@ def hidpp_probe(session: HidppSession, path: bytes, force: bool = False) -> Hidp
         elif state == "present":
             devices.append(HidppDevice(index=index, name=session.device_name(index)))
 
-    if not devices and not asleep:
-        # 有线模式：HID++ 通道本身可能就是设备（索引 0xFF），必须自带电量特性
-        has_battery = bool(
-            session.get_feature(0xFF, FEATURE_UNIFIED_BATTERY) or session.get_feature(0xFF, FEATURE_BATTERY_STATUS)
-        )
-        if has_battery:
-            devices.append(HidppDevice(index=0xFF, name=session.device_name(0xFF), wired=True))
+    if not devices:
+        wired = _probe_wired(session)
+        if wired is not None:
+            devices.append(wired)
 
     probe = HidppProbe(devices=devices, asleep=asleep and not devices)
     if devices:

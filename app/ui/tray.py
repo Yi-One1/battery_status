@@ -14,7 +14,7 @@ from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
-from ..core import autostart
+from ..core import autostart, presence
 from ..core.config import DeviceRegistry, SettingsStore
 from ..core.model import Snapshot
 from . import theme
@@ -160,7 +160,11 @@ class TrayController(QObject):
     def update_snapshots(self, snapshots: dict[str, Snapshot]) -> None:
         self._snapshots = snapshots
         prefs = self.store.prefs
-        devices = [d for d in self.registry.enabled_devices() if d.id in snapshots]
+        # 断连久了被收起的设备不再占托盘坑位，否则用久了会攒出一排灰电池
+        devices = [
+            d for d in presence.filter_visible(self.registry.enabled_devices(), snapshots, prefs) if d.id in snapshots
+        ]
+        self._visible = devices
         show_percent = prefs.tray_show_percent
 
         if prefs.tray_mode == "merged" or len(devices) <= 1:
@@ -194,7 +198,7 @@ class TrayController(QObject):
 
     def _tooltip(self) -> str:
         lines = []
-        for cfg in self.registry.enabled_devices():
+        for cfg in getattr(self, "_visible", self.registry.enabled_devices()):
             snap = self._snapshots.get(cfg.id)
             if snap:
                 lines.append(self._device_line(cfg.display_name, snap))
@@ -218,7 +222,7 @@ class TrayController(QObject):
     def _populate_menu(self) -> None:
         self._menu.clear()
         prefs = self.store.prefs
-        for cfg in self.registry.enabled_devices():
+        for cfg in getattr(self, "_visible", self.registry.enabled_devices()):
             snap = self._snapshots.get(cfg.id)
             if snap is None:
                 continue

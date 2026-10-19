@@ -21,6 +21,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QFontMetrics,
     QImage,
     QLinearGradient,
     QPainter,
@@ -429,6 +430,74 @@ class SegmentedControl(QWidget):
             cell = self._segment_rect(index)
             painter.setPen(QColor(theme.TEXT_PRIMARY if index == self._index else theme.TEXT_SECONDARY))
             painter.drawText(cell, Qt.AlignmentFlag.AlignCenter, label)
+        painter.end()
+
+
+class PillButton(QAbstractButton):
+    """胶囊文字按钮：用于"添加设备 / 移除"这类次级操作。
+
+    自绘而不用 QPushButton，是为了让圆角、半透明底和字体跟玻璃面板一致——
+    走 QSS 的话在这些平台字体族上会掉回系统默认，视觉上会"跳出来"。
+    """
+
+    TONES: dict[str, tuple[str, tuple[int, int, int, int]]] = {
+        "neutral": (theme.TEXT_SECONDARY, (120, 120, 128, 30)),
+        "accent": (theme.ACCENT_BLUE, (10, 132, 255, 30)),
+        "danger": (theme.DANGER, (255, 69, 58, 30)),
+    }
+
+    def __init__(
+        self,
+        text: str,
+        parent: Optional[QWidget] = None,
+        *,
+        tone: str = "neutral",
+        height: int = 24,
+        min_width: int = 0,
+    ) -> None:
+        super().__init__(parent)
+        self.tone = tone
+        self._hover = False
+        self.setText(text)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedHeight(height)
+        metrics = QFontMetrics(theme.font(11.5, 500))
+        self.setMinimumWidth(max(min_width, metrics.horizontalAdvance(text) + 24))
+        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+
+    def set_tone(self, tone: str) -> None:
+        self.tone = tone
+        self.update()
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = rect.height() / 2
+        foreground, background = self.TONES.get(self.tone, self.TONES["neutral"])
+        fill = QColor(*background)
+        if self._hover:
+            fill.setAlpha(min(255, background[3] + 26))
+        if self.isDown():
+            fill.setAlpha(min(255, background[3] + 44))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.setPen(QColor(foreground))
+        painter.setFont(theme.font(11.5, 500))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.text())
         painter.end()
 
 
