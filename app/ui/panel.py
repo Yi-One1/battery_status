@@ -26,7 +26,7 @@ from ..core.monitor import Monitor
 from ..core.paths import resource_root
 from ..core.presence import filter_visible, hidden_devices
 from . import theme, winblur
-from .backdrop import capture_window_rect
+from .backdrop import capture_screen
 from .cards import DeviceCard
 from .glass import GlassSurface, IconButton, apply_shadow, clear_backdrop, paint_glass, set_backdrop
 from .settings import SettingsPane
@@ -37,6 +37,9 @@ log = logging.getLogger(__name__)
 MARGIN = 26          # 阴影留白
 CONTENT_WIDTH = 420
 HEADER_HEIGHT = 58
+# 面板显示期间重取桌面底图的间隔。取整屏 + 1/8 缩放约 20~30 ms，
+# 15 秒一次摊下来对 CPU 的影响可以忽略，但换壁纸能在一刻钟内跟上。
+BACKDROP_REFRESH_MS = 15_000
 FOOTER_HEIGHT = 42
 CARD_HEIGHT = 152
 CARD_GAP = 12
@@ -90,6 +93,12 @@ class Panel(QWidget):
         self._hotplug.setSingleShot(True)
         self._hotplug.setInterval(1200)
         self._hotplug.timeout.connect(self._on_hotplug)
+
+        # 显示期间定时重取桌面底图：换壁纸 / 别的窗口移到面板后面时，
+        # 玻璃里的颜色会跟着变，而不是停在打开那一刻。隐藏时停掉，不占 CPU。
+        self._backdrop_timer = QTimer(self)
+        self._backdrop_timer.setInterval(BACKDROP_REFRESH_MS)
+        self._backdrop_timer.timeout.connect(self._refresh_backdrop)
 
     # ------------------------------------------------------------------ 构建
     def _build(self) -> None:
@@ -309,24 +318,34 @@ class Panel(QWidget):
         self.monitor.refresh()
 
     def _refresh_backdrop(self) -> None:
-        """把窗口背后的桌面做成玻璃的底，并从中取环境色。失败则回落静态玻璃。"""
-        result = capture_window_rect(self.frameGeometry())
-        if result is None:
-            clear_backdrop()
-            self._has_backdrop = False
-            self._apply_window_blur()
+        """取整屏桌面做玻璃的底，并从中取环境色。失败则回落静态玻璃。
+
+        取整屏（而不是窗口那一块）是"实时"的关键：板材自带屏幕原点，
+        绘制端按控件的屏幕坐标取像素，所以面板拖动时颜色天然跟着走；
+        显示期间由 `_backdrop_timer` 每 15 秒重取一次，换壁纸也能跟上。
+        重取时要把面板自己占的那块抹掉（`exclude`），否则每刷一次就白一层。
+        """
+        exclude = self.frameGeometry().adjusted(-6, -6, 6, 6) if self.isVisible() else None
+        backdrop = capture_screen(exclude=exclude)
+        if backdrop is None or not backdrop.is_valid():
+            if not self._has_backdrop:
+                clear_backdrop()
+                self._apply_window_blur()
             return
-        pixmap, palette = result
-        target = self.size()
-        if pixmap.size() != target:
-            pixmap = pixmap.scaled(
-                target,
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        set_backdrop(pixmap, palette)
+        set_backdrop(
+            backdrop.pixmap,
+            backdrop.palette,
+            origin=backdrop.origin,
+            scale=backdrop.scale,
+        )
         self._has_backdrop = True
-        log.debug("背景取样完成：亮度 %.2f，环境色 %s", palette.luminance, palette.color.name())
+        log.debug(
+            "背景取样完成：亮度 %.2f，环境色 %s，原点 %s，1/%d 缩放",
+            backdrop.palette.luminance,
+            backdrop.palette.color.name(),
+            backdrop.origin,
+            int(backdrop.scale),
+        )
         self._apply_window_blur()
 
     def open_settings(self) -> None:
@@ -375,6 +394,12 @@ class Panel(QWidget):
         super().showEvent(event)
         self._shown_at = time.monotonic()
         self._apply_window_blur()
+        self._backdrop_timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        # 隐藏后没必要再截屏 —— 低占用的一部分
+        self._backdrop_timer.stop()
+        super().hideEvent(event)
 
     def _apply_window_blur(self) -> None:
         hwnd = int(self.winId())

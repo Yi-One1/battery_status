@@ -13,17 +13,19 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QPointF, QRect, QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPixmap
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QLinearGradient, QPainter, QPixmap
 
 from app.ui import glass
 from app.ui.backdrop import (
     DEFAULT_PALETTE,
     BackdropPalette,
+    _grab,
     _is_blank_capture,
     analyse,
     blur_image,
-    capture_window_rect,
+    capture_screen,
+    smear_rect,
 )
 
 
@@ -186,9 +188,111 @@ def test_blank_capture_accepts_a_gradient():
     assert _is_blank_capture(_painted(32, 32, draw)) is False
 
 
-def test_capture_returns_none_for_degenerate_rect():
-    assert capture_window_rect(QRect(0, 0, 0, 120)) is None
-    assert capture_window_rect(QRect(0, 0, 120, 0)) is None
+def test_grab_returns_none_for_degenerate_rect():
+    assert _grab(QRect(0, 0, 0, 120)) is None
+    assert _grab(QRect(0, 0, 120, 0)) is None
+
+
+# --------------------------------------------------------------------------- #
+# 整屏取样（问题3：拖动 / 换壁纸要实时跟上）
+# --------------------------------------------------------------------------- #
+def test_smear_rect_erases_the_patch_under_the_panel():
+    """面板自己占的那块必须被抹平，否则每刷一次底图就白一层。"""
+
+    def draw(painter: QPainter, width: int, height: int) -> None:
+        ramp = QLinearGradient(0, 0, width, 0)
+        ramp.setColorAt(0.0, QColor("#203040"))
+        ramp.setColorAt(1.0, QColor("#C0D0E0"))
+        painter.fillRect(0, 0, width, height, ramp)
+        painter.fillRect(28, 8, 12, 8, QColor("#FFFFFF"))  # 面板留下的亮块
+
+    image = _painted(64, 24, draw)
+    before = image.pixelColor(34, 12)
+    smear_rect(image, QRect(28, 8, 12, 8))
+    after = image.pixelColor(34, 12)
+
+    assert before.red() > 200          # 亮块本来在
+    assert after.red() < 200            # 被抹掉了
+    # 抹平用两侧颜色插值，结果应该落在两侧之间
+    left = image.pixelColor(27, 12).red()
+    right = image.pixelColor(41, 12).red()
+    assert min(left, right) - 6 <= after.red() <= max(left, right) + 6
+    # 区域外不动
+    assert image.pixelColor(2, 2) == image.pixelColor(2, 2)
+
+
+def test_smear_rect_survives_screen_edges():
+    image = _image(32, 16, "#404040")
+    smear_rect(image, QRect(-10, -10, 200, 200))  # 比整张图还大
+    assert image.pixelColor(5, 5).red() == 0x40
+
+
+def test_smear_rect_ignores_empty_rect():
+    image = _image(16, 16, "#123456")
+    smear_rect(image, QRect(4, 4, 0, 0))
+    assert image.pixelColor(8, 8).red() == 0x12
+
+
+def test_backdrop_carries_origin_and_scale():
+    pixmap = QPixmap.fromImage(_image(40, 30, "#808080"))
+    glass.set_backdrop(pixmap, DEFAULT_PALETTE, origin=QPoint(1280, 40), scale=8.0)
+
+    assert glass.current_backdrop() is pixmap
+    assert glass.backdrop_origin() == QPoint(1280, 40)
+    assert glass.backdrop_scale() == pytest.approx(8.0)
+
+    glass.clear_backdrop()
+    assert glass.backdrop_origin() == QPoint(0, 0)
+    assert glass.backdrop_scale() == pytest.approx(1.0)
+
+
+def test_glass_samples_by_screen_coordinates():
+    """板材原点在 (1000,500)、1/2 缩放：控件在全局 x=1040 处，应取到板材 x=20。"""
+    plate = _painted(80, 40, _half_red_half_green)
+    glass.set_backdrop(
+        QPixmap.fromImage(plate),
+        analyse(plate),
+        origin=QPoint(1000, 500),
+        scale=2.0,
+    )
+
+    size = 20
+    reading = _render_glass(size, size, alpha=0.74, radius=3, offset=QPointF(1040, 500), glow=False)
+    centre = reading.pixelColor(size // 2, size // 2)
+    assert centre.red() > centre.green()  # 板材 x=20 处是红的
+
+    reading = _render_glass(size, size, alpha=0.74, radius=3, offset=QPointF(1120, 500), glow=False)
+    centre = reading.pixelColor(size // 2, size // 2)
+    assert centre.green() > centre.red()  # 板材 x=60 处是绿的
+
+
+def _half_red_half_green(painter: QPainter, width: int, height: int) -> None:
+    painter.fillRect(0, 0, width // 2, height, QColor("#C81E28"))
+    painter.fillRect(width // 2, 0, width - width // 2, height, QColor("#127A4A"))
+
+
+def test_moving_the_panel_changes_what_shows_through():
+    """这条是问题3的核心：同一个控件，屏幕位置不同，透出的底色就该不同。"""
+    plate = _painted(160, 40, _half_red_half_green)
+    glass.set_backdrop(QPixmap.fromImage(plate), analyse(plate), origin=QPoint(0, 0), scale=1.0)
+
+    left = _render_glass(24, 24, alpha=0.74, radius=3, offset=QPointF(10, 0), glow=False).pixelColor(12, 12)
+    right = _render_glass(24, 24, alpha=0.74, radius=3, offset=QPointF(120, 0), glow=False).pixelColor(12, 12)
+
+    assert left.red() > left.green()
+    assert right.green() > right.red()
+
+
+def test_capture_screen_reports_screen_geometry():
+    """真实截一次整屏；截不到（无桌面合成）就跳过。"""
+    backdrop = capture_screen()
+    if backdrop is None:
+        pytest.skip("当前环境截不到屏幕")
+    screen = QGuiApplication.primaryScreen().geometry()
+    assert backdrop.origin == screen.topLeft()
+    assert backdrop.scale >= 1
+    assert backdrop.pixmap.width() <= screen.width()
+    assert backdrop.is_valid() is True
 
 
 # --------------------------------------------------------------------------- #
@@ -348,7 +452,14 @@ def test_hovering_brightens_the_surface(qapp):
     assert surface.base_alpha == 0.42  # 提亮只发生在绘制时，不改基准值
 
 
-def test_backdrop_offset_is_window_local(qapp):
-    surface = glass.GlassSurface()
-    surface.resize(80, 60)
-    assert surface.backdrop_offset() == QPointF(0.0, 0.0)
+def test_backdrop_offset_is_screen_global(qapp):
+    """底图按整屏取，控件必须报自己的**屏幕坐标**，不能报窗口内坐标。"""
+    window = glass.GlassSurface()
+    window.resize(120, 90)
+    window.move(300, 200)
+    child = glass.GlassSurface(window)
+    child.setGeometry(10, 20, 40, 30)
+
+    assert child.backdrop_offset() == QPointF(child.mapToGlobal(QPoint(0, 0)))
+    if window.pos() == QPoint(300, 200):  # 离屏平台下 move 可能被忽略
+        assert child.backdrop_offset() == QPointF(310.0, 220.0)

@@ -1,15 +1,20 @@
-"""桌面背景取样：把窗口背后的屏幕截下来，重模糊 + 提取环境色。
+"""桌面背景取样：把屏幕截下来，重模糊 + 提取环境色。
 
 这是"柔光玻璃"的地基。澎湃 OS 4 那套材质的要点是**感知融色**：
 玻璃不是一块固定的白色半透明板，它透出背后的内容，并从背景里取一个色调回来，
-所以换壁纸整个界面跟着变。Windows 上等价的做法就是自己截屏：
+所以换壁纸整个界面跟着变。
 
-    capture_window_rect() → 缩小 → 反复平滑缩放（近似高斯）→ 提取主色
+**为什么取整屏而不是取窗口那一块**：
+只取窗口大小的话，面板一被拖动，玻璃里透的仍是打开那一刻的桌面 —— 位置全错了。
+取整屏、把板材原点和缩放一起记住，绘制时按"控件的屏幕坐标"去取对应像素，
+拖动时颜色自然跟着走，换壁纸只需过几秒重新取一次。
 
 几个刻意的选择：
-  * **重度缩小再放大** 当模糊用：比真卷积快两个数量级，而且效果更"柔"（没有振铃）；
-  * **只统计有颜色的像素** 求环境色：否则一片灰底会把任何色调冲淡成灰；
-  * **截到纯黑就判定失败**：全屏独显游戏 / 远程桌面下 grabWindow 会返回黑图，
+  * **先缩到 1/8 再模糊**：既当模糊用，又把板材从 14MB 压到 0.9MB（低占用）；
+  * **只统计有颜色的像素**求环境色，否则一片灰底会把任何色调冲淡成灰；
+  * **重新取样前先把面板自己占的那块抹平**（`_smear_rect`）：
+    否则每轮取样都会把面板自己的亮色糊进底图，玻璃越刷新越白；
+  * **截到纯黑就判失败**：全屏独显游戏 / 远程桌面下 grabWindow 会返回黑图，
     这种情况必须回落到静态玻璃，而不是把界面刷黑。
 """
 from __future__ import annotations
@@ -18,11 +23,13 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from PySide6.QtCore import QRect, QRectF, Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPixmap
 
 log = logging.getLogger(__name__)
 
+# 板材相对屏幕的缩小比例：1 像素板材 = SCALE 个逻辑像素
+SCALE = 8
 # 模糊强度：先缩到这个宽度的 1/BLUR_DIVISOR，再平滑放大回去
 BLUR_DIVISOR = 8
 BLUR_PASSES = 2
@@ -149,11 +156,63 @@ def _is_blank_capture(image: QImage) -> bool:
     return _luma(only.red(), only.green(), only.blue()) < 0.03
 
 
-def capture_window_rect(rect: QRect, size_hint: Optional[object] = None) -> Optional[tuple[QPixmap, BackdropPalette]]:
-    """截取屏幕上的 `rect` 区域（全局坐标），返回模糊底图与环境色。
+def smear_rect(image: QImage, rect: QRect) -> None:
+    """把 rect 里的像素沿水平方向用两侧边缘做线性插值填平。
 
-    返回的 pixmap 尺寸等于 rect 的逻辑尺寸，绘制时可以 1:1 贴到窗口坐标上。
+    用途：面板显示期间重新取样时，屏幕上那一块是**面板自己**。
+    不抹掉的话，每刷新一次底图就把面板的亮色糊进去一层，玻璃会越来越白。
+    底图是重模糊的，横向插值在视觉上和周围完全接得上。
+
+    边界处理：某一侧贴着屏幕边缘时，就用另一侧的颜色铺满（总比留一块假的亮斑好）。
     """
+    if image.isNull() or rect.isEmpty():
+        return
+    left = max(0, rect.left())
+    right = min(image.width() - 1, rect.right())
+    top = max(0, rect.top())
+    bottom = min(image.height() - 1, rect.bottom())
+    if right <= left or bottom <= top:
+        return
+    if image.format() != QImage.Format.Format_RGB32:
+        image.convertTo(QImage.Format.Format_RGB32)
+
+    for y in range(top, bottom + 1):
+        if left > 0:
+            start = image.pixelColor(left - 1, y)
+        elif right + 1 < image.width():
+            start = image.pixelColor(right + 1, y)
+        else:
+            continue
+        stop = image.pixelColor(right + 1, y) if right + 1 < image.width() else start
+        span = right - left + 2
+        for x in range(left, right + 1):
+            t = (x - left + 1) / span
+            image.setPixelColor(
+                x,
+                y,
+                QColor(
+                    round(start.red() + (stop.red() - start.red()) * t),
+                    round(start.green() + (stop.green() - start.green()) * t),
+                    round(start.blue() + (stop.blue() - start.blue()) * t),
+                ),
+            )
+
+
+@dataclass(frozen=True)
+class Backdrop:
+    """一块可以直接用来画的桌面底图，自带坐标系。"""
+
+    pixmap: QPixmap
+    palette: BackdropPalette
+    origin: QPoint      # pixmap 左上角对应的屏幕全局坐标
+    scale: float        # pixmap 上 1 像素 = scale 个逻辑像素
+
+    def is_valid(self) -> bool:
+        return not self.pixmap.isNull() and self.scale > 0
+
+
+def _grab(rect: QRect) -> Optional[QImage]:
+    """按全局坐标截一块屏幕；空白 / 失败返回 None。"""
     if rect.width() <= 0 or rect.height() <= 0:
         return None
     screen = QGuiApplication.screenAt(rect.center()) or QGuiApplication.primaryScreen()
@@ -172,11 +231,47 @@ def capture_window_rect(rect: QRect, size_hint: Optional[object] = None) -> Opti
     if _is_blank_capture(image):
         log.debug("截屏为空白，改用静态玻璃")
         return None
-
-    palette = analyse(image)
-    blurred = blur_image(image)
-    return QPixmap.fromImage(blurred), palette
+    return image
 
 
-def backdrop_from_rect(rect: QRectF) -> Optional[tuple[QPixmap, BackdropPalette]]:  # pragma: no cover - 便捷包装
-    return capture_window_rect(QRect(int(rect.x()), int(rect.y()), int(rect.width()), int(rect.height())))
+def capture_screen(exclude: Optional[QRect] = None) -> Optional[Backdrop]:
+    """截当前屏幕整屏，缩到 1/SCALE 并模糊，返回带坐标系的底图。
+
+    exclude 是**现在被本程序自己占住**的区域（面板窗口矩形，全局坐标），
+    取样时会被抹平，避免把面板画进底图。
+    """
+    screen = QGuiApplication.primaryScreen()
+    target = screen
+    if exclude is not None:
+        target = QGuiApplication.screenAt(exclude.center()) or screen
+    if target is None:
+        return None
+    geometry = target.geometry()
+    image = _grab(geometry)
+    if image is None:
+        return None
+
+    width = max(2, image.width() // SCALE)
+    height = max(2, image.height() // SCALE)
+    small = image.scaled(
+        width, height, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation
+    )
+
+    if exclude is not None:
+        local = QRect(
+            (exclude.x() - geometry.x()) // SCALE,
+            (exclude.y() - geometry.y()) // SCALE,
+            max(1, exclude.width() // SCALE),
+            max(1, exclude.height() // SCALE),
+        )
+        smear_rect(small, local)
+
+    palette = analyse(small)
+    # 已经在 1/SCALE 尺度上了，再来一轮半分辨率往返就够了
+    blurred = blur_image(small, divisor=2, passes=2)
+    return Backdrop(
+        pixmap=QPixmap.fromImage(blurred),
+        palette=palette,
+        origin=geometry.topLeft(),
+        scale=float(SCALE),
+    )

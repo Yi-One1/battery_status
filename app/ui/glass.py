@@ -54,16 +54,35 @@ _NOISE: Optional[QPixmap] = None
 
 # --------------------------------------------------------------------------- #
 # 当前背景（由 Panel 在显示前设置，所有玻璃控件共享）
+#
+# 底图是**整屏**的板材，自带原点与缩放：
+#   * 控件用屏幕全局坐标去取像素，所以面板拖到哪，玻璃透出的就是那块桌面；
+#   * 每隔几秒重新取一次，换壁纸也会跟上；
+#   * 没有背景板时（截图失败）origin 为 (0,0)、scale 为 1，退化成"窗口局部"语义。
 # --------------------------------------------------------------------------- #
 _BACKDROP: Optional[QPixmap] = None
 _PALETTE: BackdropPalette = DEFAULT_PALETTE
+_BACKDROP_ORIGIN = QPoint(0, 0)
+_BACKDROP_SCALE = 1.0
 
 
-def set_backdrop(pixmap: Optional[QPixmap], palette: Optional[BackdropPalette] = None) -> None:
-    """设置"窗口背后的模糊桌面"。pixmap 需与窗口等大（逻辑像素）。"""
-    global _BACKDROP, _PALETTE
+def set_backdrop(
+    pixmap: Optional[QPixmap],
+    palette: Optional[BackdropPalette] = None,
+    *,
+    origin: Optional[QPoint] = None,
+    scale: float = 1.0,
+) -> None:
+    """设置"窗口背后的桌面"。
+
+    pixmap 与窗口等大时用默认的 origin=(0,0)/scale=1（窗口局部坐标）；
+    整屏取样时把屏幕原点和 SCALE 一起传进来，绘制端就能按全局坐标对齐。
+    """
+    global _BACKDROP, _PALETTE, _BACKDROP_ORIGIN, _BACKDROP_SCALE
     _BACKDROP = pixmap
     _PALETTE = palette or DEFAULT_PALETTE
+    _BACKDROP_ORIGIN = QPoint(origin) if origin is not None else QPoint(0, 0)
+    _BACKDROP_SCALE = max(0.01, float(scale or 1.0))
 
 
 def clear_backdrop() -> None:
@@ -72,6 +91,14 @@ def clear_backdrop() -> None:
 
 def current_backdrop() -> Optional[QPixmap]:
     return _BACKDROP
+
+
+def backdrop_origin() -> QPoint:
+    return QPoint(_BACKDROP_ORIGIN)
+
+
+def backdrop_scale() -> float:
+    return _BACKDROP_SCALE
 
 
 def environment_palette() -> BackdropPalette:
@@ -219,7 +246,13 @@ def paint_glass(
     # ① 背后的桌面（已重度模糊）
     if show_backdrop:
         origin = offset or QPointF(0.0, 0.0)
-        source = QRectF(origin.x(), origin.y(), rect.width(), rect.height())
+        # 控件给的是**屏幕全局坐标**，换算成板材像素坐标
+        source = QRectF(
+            (origin.x() - _BACKDROP_ORIGIN.x()) / _BACKDROP_SCALE,
+            (origin.y() - _BACKDROP_ORIGIN.y()) / _BACKDROP_SCALE,
+            rect.width() / _BACKDROP_SCALE,
+            rect.height() / _BACKDROP_SCALE,
+        )
         # 背景板比控件小的时候（缩放出岔子、HiDPI 换算错位），越界取样会让整块背景
         # 直接消失。裁剪出有效区域再按比例映射回目标矩形，至少不会突然变成一张白纸。
         valid = source.intersected(QRectF(0.0, 0.0, float(backdrop.width()), float(backdrop.height())))
@@ -235,6 +268,8 @@ def paint_glass(
             painter.save()
             painter.setClipPath(path)
             painter.setOpacity(max(0.0, min(1.0, backdrop_weight)))
+            # 板材是 1/SCALE 的，放大时要平滑，否则会看到块状边界
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             painter.drawPixmap(dest, backdrop, valid)
             painter.restore()
 
@@ -349,11 +384,12 @@ class GlassSurface(QWidget):
         self.update()
 
     def backdrop_offset(self) -> QPointF:
-        """本控件在窗口坐标里的左上角 —— 用来从背景图上抠出自己那块。"""
-        window = self.window()
-        if window is None or window is self:
-            return QPointF(0.0, 0.0)
-        point = self.mapTo(window, QPoint(0, 0))
+        """本控件左上角的**屏幕全局坐标** —— 底图按整屏取，必须用全局坐标对齐。
+
+        用全局坐标的好处：面板被拖到哪里，玻璃透出的就是那块桌面，
+        不需要在移动时重新截屏（这也正是"实时"的关键）。
+        """
+        point = self.mapToGlobal(QPoint(0, 0))
         return QPointF(float(point.x()), float(point.y()))
 
     def paintEvent(self, event) -> None:  # noqa: N802

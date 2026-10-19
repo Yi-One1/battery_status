@@ -99,7 +99,14 @@ def composite(panel: Panel, out_path: Path, extra_w: int = 408, extra_h: int = 1
 
     behind = wallpaper.copy(QRect(int(x), int(y), size.width(), size.height())).toImage()
     behind.setDevicePixelRatio(1.0)
-    set_backdrop(QPixmap.fromImage(blur_image(behind)), analyse(behind))
+    # 底图按"屏幕全局坐标"对齐（玻璃现在用 mapToGlobal 取像素），
+    # 所以这块壁纸要挂在面板真实的屏幕位置上，否则预览里的玻璃会错位。
+    set_backdrop(
+        QPixmap.fromImage(blur_image(behind)),
+        analyse(behind),
+        origin=panel.frameGeometry().topLeft(),
+        scale=1.0,
+    )
 
     shot = panel.grab()
     canvas = wallpaper.copy()
