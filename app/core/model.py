@@ -74,7 +74,10 @@ class Snapshot:
         if self.charging:
             return f"{link} · 充电中" if link else "充电中"
         if self.level is None:
-            return "暂无电量"
+            # 读不到电量时，链路本身就是唯一拿得出手的真实信息。
+            # 例如飞智 2.4G：硬件根本不输出电量，但"它正连在 2.4G 上"是确凿的。
+            # 连链路也不知道时才退回「暂无电量」—— 宁可少说一句，也不猜。
+            return f"{link} 连接" if link else "暂无电量"
         if self.level <= low_threshold:
             return "电量偏低"
         # 一切正常时，把"走哪条链路"顶上来 —— 这比一句"使用中"有用得多

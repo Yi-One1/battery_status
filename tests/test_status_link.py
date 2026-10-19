@@ -46,7 +46,19 @@ def test_link_does_not_hide_problems():
     assert snap(link=LINK_WIRELESS, level=8).status_text() == "电量偏低"
     assert snap(link=LINK_WIRELESS, sleeping=True).status_text() == "休眠中"
     assert snap(link=LINK_WIRELESS, online=False).status_text() == "未连接"
-    assert snap(link=LINK_WIRELESS, level=None).status_text() == "暂无电量"
+    assert snap(link=LINK_WIRELESS, level=None, charging=True).status_text() == "2.4G · 充电中"
+
+
+def test_link_is_shown_when_level_is_unavailable():
+    """飞智那类设备：硬件不输出电量，但"正连在 2.4G 上"是确凿的 —— 就写链路。"""
+    assert snap(link=LINK_WIRELESS, level=None).status_text() == "2.4G 连接"
+    assert snap(link=LINK_WIRED, level=None).status_text() == "有线 连接"
+
+
+def test_no_level_and_no_link_still_says_unavailable():
+    """连链路都判断不出来时，不许拿链路凑出一句话。"""
+    assert snap(level=None).status_text() == "暂无电量"
+    assert snap(level=None, link="").status_text() == "暂无电量"
 
 
 def test_link_label_only_knows_the_two_real_cases():
@@ -237,7 +249,7 @@ def test_dongle_configs_declare_wireless():
 
     root = Path(__file__).resolve().parent.parent
     data = json.loads((root / "app" / "config" / "devices.json").read_text(encoding="utf-8"))
-    for device_id in ("mchose-g98pro", "edifier-g3max"):
+    for device_id in ("mchose-g98pro", "edifier-g3max", "flydigi-apex4"):
         device = next(d for d in data["devices"] if d["id"] == device_id)
         assert device["protocol"]["link"] == "wireless"
     mouse = next(d for d in data["devices"] if d["id"] == "logitech-gpx-superlight")
