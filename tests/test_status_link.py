@@ -249,9 +249,109 @@ def test_dongle_configs_declare_wireless():
 
     root = Path(__file__).resolve().parent.parent
     data = json.loads((root / "app" / "config" / "devices.json").read_text(encoding="utf-8"))
-    for device_id in ("mchose-g98pro", "edifier-g3max", "flydigi-apex4"):
+    for device_id in ("mchose-g98pro", "edifier-g3max"):
         device = next(d for d in data["devices"] if d["id"] == device_id)
         assert device["protocol"]["link"] == "wireless"
+    # 飞智改为基于端口动态判别（有线/2.4G 共享 USB 实例 ID，只能看端口）
+    flydigi = next(d for d in data["devices"] if d["id"] == "flydigi-apex4")
+    assert flydigi["protocol"]["link"]["mode"] == "port"
+    assert flydigi["protocol"]["link"]["wireless_port"]
     mouse = next(d for d in data["devices"] if d["id"] == "logitech-gpx-superlight")
     # 鼠标的链路是运行时判定的，配置里不能预先声明
     assert "link" not in mouse["protocol"]
+
+
+# --------------------------------------------------------------------------- #
+# 端口判别链路（飞智这类共享 USB 实例 ID 的设备）
+# --------------------------------------------------------------------------- #
+def _flydigi_info():
+    from app.core.hidapi_io import HidDeviceInfo
+
+    return HidDeviceInfo(
+        path=b"hid-fake-path",
+        vid=0x045E,
+        pid=0x028E,
+        serial="FLYDIGI_DIREWOLF_4",
+        product="Controller (Flydigi Direwolf 4)",
+    )
+
+
+def _flydigi_cfg():
+    from app.core.config import DeviceConfig
+
+    return DeviceConfig(
+        id="flydigi-apex4",
+        type="gamepad",
+        display_name="飞智 冰原狼 4",
+        match={"vid": 1118, "product_contains": ["flydigi"]},
+        protocol={
+            "name": "xinput",
+            "slot": "auto",
+            "link": {
+                "mode": "port",
+                "wireless_port": "Port_#0011.Hub_#0001",
+                "wired_charging": True,
+            },
+        },
+    )
+
+
+def test_port_link_wireless(monkeypatch):
+    """端口等于 wireless_port 时判为 2.4G。"""
+    monkeypatch.setattr(
+        protocols.xinput, "read_device", lambda slot, used: Reading(level=None, ok=True, source="xinput")
+    )
+    monkeypatch.setattr(
+        protocols,
+        "location_from_vid_pid_serial",
+        lambda vid, pid, serial: "Port_#0011.Hub_#0001",
+    )
+
+    reading = read_device(_flydigi_cfg(), [_flydigi_info()], set())
+    assert reading.ok is True
+    assert reading.link == LINK_WIRELESS
+    assert reading.charging is None
+
+
+def test_port_link_wired(monkeypatch):
+    """端口不等于 wireless_port 时判为有线；wired_charging 会置 charging=True。"""
+    monkeypatch.setattr(
+        protocols.xinput, "read_device", lambda slot, used: Reading(level=None, ok=True, source="xinput")
+    )
+    monkeypatch.setattr(
+        protocols,
+        "location_from_vid_pid_serial",
+        lambda vid, pid, serial: "Port_#0005.Hub_#0001",
+    )
+
+    reading = read_device(_flydigi_cfg(), [_flydigi_info()], set())
+    assert reading.ok is True
+    assert reading.link == LINK_WIRED
+    assert reading.charging is True
+
+
+def test_port_link_no_candidate_keeps_default(monkeypatch):
+    """没匹配到 HID 信息时无法判别，链路留空，后续不覆盖。"""
+    monkeypatch.setattr(
+        protocols.xinput, "read_device", lambda slot, used: Reading(level=None, ok=True, source="xinput")
+    )
+
+    reading = read_device(_flydigi_cfg(), [], set())
+    assert reading.ok is True
+    assert reading.link == ""
+
+
+def test_port_link_device_not_ok_does_not_guess(monkeypatch):
+    """设备未连接时绝不靠端口猜链路。"""
+    monkeypatch.setattr(
+        protocols.xinput, "read_device", lambda slot, used: Reading.fail("手柄未连接")
+    )
+    monkeypatch.setattr(
+        protocols,
+        "location_from_vid_pid_serial",
+        lambda vid, pid, serial: "Port_#0011.Hub_#0001",
+    )
+
+    reading = read_device(_flydigi_cfg(), [_flydigi_info()], set())
+    assert reading.ok is False
+    assert reading.link == ""

@@ -89,12 +89,16 @@
       "protocol": {
         "name": "xinput",
         "slot": "auto",
-        "link": "wireless"
+        "link": {
+          "mode": "port",
+          "wireless_port": "Port_#0011.Hub_#0001",
+          "wired_charging": true
+        }
       },
       "options": {
         "demo_level": 76
       },
-      "notes": "结论（2026-10-20，完整验证后）：这台手柄**不输出电量百分比**，是硬件/固件设计，不是软件缺口。界面行为：显示链路、不显示电量。证据：① 2.4G 接收器 / 手柄直连数据线 / 经充电底座三种接法，Windows 都只给一个 045E:028E 标准 Xbox 接口（UP=0x0001 U=0x0005，IN=15 / OUT=0 / FEAT=0，只挂 IG_01 子接口）。② 四条用户态通路全败——中断 OUT hid_write → rc=-1；控制传输 HidD_SetOutputReport 12 次、HidD_SetFeature 6 次全部 ERROR_INVALID_FUNCTION（err=1，HID 类驱动核对描述符后主动拒绝）；HidD_GetInputReport / HidD_GetFeature 全 FAIL；WinRT Gamepad / RawGameController 均返回 0。③ 被动监听 12004 帧全同一帧，不广播电量。④ 蓝牙模式本机实测连不上。外部佐证：官方 Direwolf 4 说明书「Low Power: The indicator light flashes red」——电量状态唯一表达是指示灯；第三方横评「飞智无法查看具体电量，仅在低电量时亮红灯提醒」。更正：早期把 2BDF:028A 当飞智设备的推断是错的，它是 HIK 2K 摄像头（usbvideo / usbaudio / usbser COM3 / HidUsb），已作废。坑：接收器与手柄直连共用 VID:PID 与序列号 045E:028E\\FLYDIGI_DIREWOLF_4，插线后 PnP 看起来无变化。XInput 仍报 BatteryType=1(WIRED) + BatteryLevel=3，代码已改为一律返回 level=None/charging=None，不再误报「充电中」。详见 docs/flydigi-battery-design.md。"
+      "notes": "结论（2026-10-20）：这台手柄**不输出电量百分比**，是硬件/固件设计。但能区分 2.4G / 有线 / 未连接三态：接收器和有线手柄共用 USB 实例 ID 045E:028E\\FLYDIGI_DIREWOLF_4，却占不同物理端口；程序读取注册表 LocationInformation 判别链路。link 配置为 {mode:port, wireless_port:Port_#0011.Hub_#0001, wired_charging:true}，因此插线时显示「有线 · 充电中」，无线时显示「2.4G 连接」，休眠时显示「未连接」。电量百分比与底座无线充电状态仍不可得。证据与实现细节见 docs/flydigi-battery-design.md。"
     },
     {
       "id": "mchose-g98pro",
