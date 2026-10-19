@@ -79,7 +79,7 @@ def connected_slots() -> list[int]:
 def read_slot(slot: int) -> Reading:
     lib = _library()
     if lib is None:
-        return Reading.fail(_load_error)
+        return Reading.fail(_load_error or "系统缺少 XInput 运行库")
     state = _State()
     if lib.XInputGetState(slot, ctypes.byref(state)) != 0:
         return Reading.fail("手柄未连接")
@@ -89,20 +89,32 @@ def read_slot(slot: int) -> Reading:
         return Reading.fail("XInput 未提供电池信息")
 
     if info.BatteryType == BATTERY_TYPE_WIRED:
-        # 有线供电时 Windows 固定报「满」，不能当作真实电量
+        # 2.4G 接收器会把自己伪装成"有线供电"的 Xbox 手柄，Windows 固定报"满"档。
+        # 这种接入方式下：既没有充电的证据（绝大多数时候根本没插线），
+        # 也没有任何可用的电量档位 —— 所以两个字段都留空，界面会显示「暂无电量」，
+        # 而不是原来那句会误导人的「充电中」。
         return Reading(
             level=None,
-            charging=True,
+            charging=None,
             source="xinput",
             ok=True,
-            detail=f"手柄 {slot} · 有线供电，XInput 不提供电量档位",
+            detail=f"手柄 {slot} · 有线/接收器接入，XInput 不提供电量档位",
         )
     if info.BatteryType == BATTERY_TYPE_DISCONNECTED:
         return Reading.fail("手柄已断开")
 
-    level = LEVEL_PERCENT.get(int(info.BatteryLevel), 100)
+    percent = LEVEL_PERCENT.get(int(info.BatteryLevel))
+    if percent is None:
+        # 超出 EMPTY/LOW/MEDIUM/FULL 四档：宁可没有数字，也不要编一个 100
+        return Reading(
+            level=None,
+            charging=False,
+            source="xinput",
+            ok=True,
+            detail=f"手柄 {slot} · XInput 返回了未知电量档位 0x{int(info.BatteryLevel):02X}",
+        )
     return Reading(
-        level=level,
+        level=percent,
         charging=False,
         source="xinput",
         ok=True,
