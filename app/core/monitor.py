@@ -164,6 +164,8 @@ class Monitor(QThread):
                 history=list(history),
                 sleeping=True,
                 last_seen=seen,
+                # 休眠不影响"走哪条链路"，沿用上一次的判断
+                link=previous.link if previous else "",
             )
 
         if reading.ok:
@@ -187,6 +189,7 @@ class Monitor(QThread):
                 history=[],
                 sleeping=False,
                 last_seen=seen,
+                link=reading.link or (previous.link if previous else ""),
             )
         else:
             misses = self._misses.get(cfg.id, 0) + 1
@@ -207,4 +210,5 @@ class Monitor(QThread):
             history=list(history),
             sleeping=False,
             last_seen=seen,
+            link=(reading.link if reading.ok else "") or (previous.link if previous else ""),
         )

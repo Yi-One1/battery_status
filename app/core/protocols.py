@@ -22,7 +22,7 @@ from . import xinput
 from .config import DeviceConfig, DeviceRegistry
 from .hidapi_io import HidDeviceInfo, HidHandle, sort_preferred
 from .hidnative import device_caps, read_battery_strength
-from .model import Reading
+from .model import Reading, LINK_WIRED, LINK_WIRELESS
 
 log = logging.getLogger(__name__)
 
@@ -306,6 +306,8 @@ def read_logitech(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
         reading = session.read_battery(target.index)
         if not reading.ok:
             _HIDPP_CACHE.pop(info.path.decode("utf-8", "ignore"), None)
+        # 索引 0xFF 是有线模式（HID++ 通道本身就是设备），1~6 是接收器上的无线设备
+        reading.link = LINK_WIRED if target.wired else LINK_WIRELESS
         if target.name:
             reading.detail = f"{target.name} · {reading.detail}" if reading.ok else reading.detail
         return reading
@@ -557,13 +559,19 @@ def read_device(cfg: DeviceConfig, infos: list[HidDeviceInfo], used_slots: Optio
     try:
         name = cfg.protocol_name
         if name == "logitech_hidpp":
+            sleeping: Optional[Reading] = None
+            detected: Optional[Reading] = None
             for info in candidate_infos(infos, cfg)[:4]:
                 reading = read_logitech(cfg, info)
                 if reading.ok:
                     return reading
                 if reading.sleeping:
-                    return reading
-            return Reading.fail("未找到可用的 HID++ 接口")
+                    # 这一路休眠不代表别的路不行：插着线的时候鼠标应答在索引 0xFF 上，
+                    # 而接收器那边就是休眠/未配对。原来这里直接 return，于是有线变成了「休眠中」。
+                    sleeping = sleeping or reading
+                    continue
+                detected = detected or reading
+            return sleeping or detected or Reading.fail("未找到可用的 HID++ 接口")
         if name == "xinput":
             return xinput.read_device(cfg.protocol.get("slot", "auto"), used_slots if used_slots is not None else set())
         if name == "hid":

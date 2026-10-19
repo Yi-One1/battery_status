@@ -13,6 +13,11 @@ SOURCE_LABELS = {
     "none": "未读取",
 }
 
+# 链路类型：有线 / 2.4G（接收器）/ 未知
+LINK_WIRED = "wired"
+LINK_WIRELESS = "wireless"
+LINK_LABELS = {LINK_WIRED: "有线", LINK_WIRELESS: "2.4G"}
+
 
 @dataclass
 class Reading:
@@ -25,6 +30,7 @@ class Reading:
     ok: bool = False
     sleeping: bool = False
     detected: bool = False   # 设备存在但读不到电量，用于区分「未连接」
+    link: str = ""           # LINK_WIRED / LINK_WIRELESS / 未知
 
     @classmethod
     def fail(cls, detail: str = "", sleeping: bool = False) -> "Reading":
@@ -47,23 +53,31 @@ class Snapshot:
     # 最后一次"看见"这台设备的时间（读成功、检测到、或休眠都算）。
     # updated_at 只在读到电量时前进，用它判断断连会把"一直读不到电量"的设备误判成离线。
     last_seen: float = 0.0
+    # 当前走的是有线还是 2.4G，"不知道"时留空 —— 界面宁可少说一句，也不猜
+    link: str = ""
 
     @property
     def source_label(self) -> str:
         return SOURCE_LABELS.get(self.source, self.source)
+
+    @property
+    def link_label(self) -> str:
+        return LINK_LABELS.get(self.link, "")
 
     def status_text(self, low_threshold: int = 20) -> str:
         if not self.online:
             return "未连接"
         if self.sleeping:
             return "休眠中"
+        link = self.link_label
         if self.charging:
-            return "充电中"
+            return f"{link} · 充电中" if link else "充电中"
         if self.level is None:
             return "暂无电量"
         if self.level <= low_threshold:
             return "电量偏低"
-        return "使用中"
+        # 一切正常时，把"走哪条链路"顶上来 —— 这比一句"使用中"有用得多
+        return f"{link} 连接" if link else "使用中"
 
     def age_text(self) -> str:
         if not self.updated_at:
