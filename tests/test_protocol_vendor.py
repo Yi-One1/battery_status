@@ -167,9 +167,15 @@ def test_live_edifier_reads_a_sane_percentage():
         pytest.skip("设备未连接")
 
     reading = read_device(cfg, infos, set())
-    assert reading.ok, f"读取失败：{reading.detail}"
-    assert reading.level is not None and 0 <= reading.level <= 100
-    assert reading.source == "vendor-query"
+    if reading.ok:
+        assert reading.level is not None and 0 <= reading.level <= 100
+        assert reading.source == "vendor-query"
+    elif reading.offline:
+        # 关着 —— 正确结果就是"已关闭"，不许带着数值
+        assert reading.level is None
+    else:
+        # 关机一段时间后 dongle 会完全静默，这种情况真机测试没法断言
+        pytest.skip(f"耳机当前无应答：{reading.detail}")
 
 
 # --------------------------------------------------------------------------- #
@@ -322,7 +328,10 @@ def test_only_echo_means_no_reading(monkeypatch):
     reading = read_vendor_query(_mchose_cfg(), mchose_info())
     assert not reading.ok
     assert reading.level is None
-    assert reading.detected is True
+    # 没应答只是"这轮不知道"：不声称设备在、也不声称休眠，交给去抖判定
+    assert reading.detected is False
+    assert reading.sleeping is False
+    assert reading.offline is False
 
 
 def test_mchose_config_wires_the_query_protocol():

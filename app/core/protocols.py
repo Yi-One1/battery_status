@@ -566,7 +566,10 @@ def read_vendor_query(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
                     detail=f"厂商查询 · {len(data)}B · {bytes(data[:8]).hex(' ').upper()}",
                 )
             time.sleep(0.03 * (attempt + 1))
-    return Reading(detail="厂商查询无应答（设备可能休眠或已断开）", detected=True, sleeping=True)
+    # 没应答就是"这轮不知道"：既不声称设备在（detected），也不声称它在休眠（sleeping）。
+    # 厂商 dongle 分不出这三种情况，硬猜只会让关机变成"休眠中"或者永远"暂无电量"。
+    # 交给监测线程的去抖：连续两轮读不到 → 未连接；只是一次抖动 → 保留上次电量。
+    return Reading.fail("厂商查询无应答（设备可能已关机或已断开）")
 
 
 # --------------------------------------------------------------------------- #

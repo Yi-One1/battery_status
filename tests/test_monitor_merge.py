@@ -101,3 +101,16 @@ def test_detected_device_stays_online_without_a_number(monitor):
     assert snapshot.online is True
     assert snapshot.level is None
     assert snapshot.status_text() == "暂无电量"
+
+
+def test_silent_dongle_goes_offline_after_two_scans(monitor):
+    """关机后 dongle 可能干脆不应答：第一轮保留旧值，第二轮才判未连接。"""
+    cfg = _cfg()
+    monitor._snapshots[cfg.id] = monitor._merge(cfg, Reading(level=48, ok=True, source="vendor-query"))
+
+    first = monitor._merge(cfg, Reading.fail("厂商查询无应答（设备可能已关机或已断开）"))
+    assert first.online is True and first.level == 48
+
+    second = monitor._merge(cfg, Reading.fail("厂商查询无应答（设备可能已关机或已断开）"))
+    assert second.online is False
+    assert second.status_text() == "未连接"
