@@ -1,6 +1,15 @@
 """玻璃质感基元：柔光底、噪点、阴影，以及几个自绘控件。
 
 全部自绘，不依赖图片资源，DPI 缩放与深浅色背景下都不会糊。
+
+"柔光玻璃"的实现要点（对应澎湃 OS 4 的那套材质语言）：
+  * **感知融色** —— 面板显示前把窗口背后的桌面截下来（backdrop.py），
+    重度模糊后当玻璃的底，再从里面取一个降饱和的环境色铺一层，
+    于是换壁纸整个界面的调子跟着变；
+  * **自适应通透度** —— 背景越暗，白纱越厚，保证深色壁纸下深色字依然清楚；
+  * **光影秩序** —— 上缘一道亮边、下缘一道更细的反光线、内侧一圈极淡的暗收口，
+    靠这三笔把"平板"画成"有厚度的一块玻璃"；
+  * **点按有光** —— 悬停时玻璃自己提亮一点，并浮出所属颜色的柔光。
 """
 from __future__ import annotations
 
@@ -39,8 +48,65 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from .backdrop import DEFAULT_PALETTE, BackdropPalette
 
 _NOISE: Optional[QPixmap] = None
+
+# --------------------------------------------------------------------------- #
+# 当前背景（由 Panel 在显示前设置，所有玻璃控件共享）
+# --------------------------------------------------------------------------- #
+_BACKDROP: Optional[QPixmap] = None
+_PALETTE: BackdropPalette = DEFAULT_PALETTE
+
+
+def set_backdrop(pixmap: Optional[QPixmap], palette: Optional[BackdropPalette] = None) -> None:
+    """设置"窗口背后的模糊桌面"。pixmap 需与窗口等大（逻辑像素）。"""
+    global _BACKDROP, _PALETTE
+    _BACKDROP = pixmap
+    _PALETTE = palette or DEFAULT_PALETTE
+
+
+def clear_backdrop() -> None:
+    set_backdrop(None, None)
+
+
+def current_backdrop() -> Optional[QPixmap]:
+    return _BACKDROP
+
+
+def environment_palette() -> BackdropPalette:
+    return _PALETTE
+
+
+def environment_color() -> QColor:
+    return QColor(_PALETTE.color)
+
+
+# 白纱自适应的几个拐点
+SCRIM_FLOOR_RATIO = 0.42   # 亮背景下的通透度 = 传入 alpha × 这个比例
+SCRIM_CEILING = 0.78       # 最暗背景下的白纱上限（保证深色文字仍然清楚）
+COMFORT_LUMA = 0.62        # 背景亮到这一步就不再额外加纱
+LUMA_RANGE = 0.50          # 从 COMFORT_LUMA 往下多少亮度区间走满整条曲线
+
+
+def adaptive_scrim(base_alpha: float) -> float:
+    """感知内容自适应通透度：亮背景几乎不加纱，暗背景加厚到能压住深色文字。
+
+    这是"柔光玻璃"和"白色半透明塑料板"的分界线。老实现是
+    `base_alpha × (0.64 + 0.42 × darkness)`，亮背景仍有 0.5 以上的白纱，
+    壁纸的颜色全被洗掉，看上去就是一块磨砂白板。现在改成两段式：
+    亮背景只留 `base_alpha × 0.42`（让颜色透上来），越往暗处按 1.25 次幂抬到 0.78。
+
+    没有背景图时直接返回调用方给的不透明度，保持老行为。
+    """
+    if _BACKDROP is None:
+        return base_alpha
+    luma = max(0.0, min(1.0, _PALETTE.luminance))
+    darkness = max(0.0, min(1.0, (COMFORT_LUMA - luma) / LUMA_RANGE))
+    floor = max(0.14, min(1.0, base_alpha * SCRIM_FLOOR_RATIO))
+    ceiling = max(floor, SCRIM_CEILING)
+    return floor + (ceiling - floor) * (darkness ** 1.25)
+
 
 
 def noise_pixmap() -> QPixmap:
@@ -101,6 +167,28 @@ def rounded_path(rect: QRectF, radius: float) -> QPainterPath:
     return path
 
 
+def paint_specular(painter: QPainter, rect: QRectF, radius: float, *, border_alpha: float = 0.75) -> None:
+    """玻璃的"厚度"三笔：上缘亮边、下缘反光线、内侧暗收口。
+
+    少任何一笔都会立刻变回"一张半透明的平面图"：
+    上缘亮边交代光从哪来，下缘反光交代材质有多厚，内侧暗边把玻璃和背景切开。
+    """
+    outer = rounded_path(rect, radius)
+    border = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+    border.setColorAt(0.0, QColor(255, 255, 255, int(255 * border_alpha)))
+    border.setColorAt(0.40, QColor(255, 255, 255, int(255 * border_alpha * 0.40)))
+    border.setColorAt(0.84, QColor(255, 255, 255, int(255 * border_alpha * 0.26)))
+    border.setColorAt(1.0, QColor(255, 255, 255, int(255 * border_alpha * 0.74)))
+    painter.strokePath(outer, QPen(QBrush(border), 1.0))
+
+    inner = rounded_path(rect.adjusted(0.7, 0.7, -0.7, -0.7), max(1.0, radius - 0.7))
+    fade = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+    fade.setColorAt(0.0, QColor(28, 28, 30, 0))
+    fade.setColorAt(0.72, QColor(28, 28, 30, 8))
+    fade.setColorAt(1.0, QColor(28, 28, 30, 26))
+    painter.strokePath(inner, QPen(QBrush(fade), 1.0))
+
+
 def paint_glass(
     painter: QPainter,
     rect: QRectF,
@@ -108,52 +196,104 @@ def paint_glass(
     *,
     alpha: float = 0.80,
     tint: Optional[str] = None,
-    tint_alpha: float = 0.10,
+    tint_alpha: float = 0.12,
     border_alpha: float = 0.75,
     glow: bool = True,
+    offset: Optional[QPointF] = None,
+    backdrop_weight: float = 1.0,
 ) -> None:
-    """绘制一块柔光玻璃：纵向渐变底 + 左上柔光 + 噪点 + 高光描边。"""
+    """绘制一块柔光玻璃。
+
+    offset            本控件在**窗口坐标系**里的左上角，用来从背景图上取对应区域
+    backdrop_weight   背景图透出的强度：外壳 1.0，叠在外壳上的卡片用 0.3 左右
+                      （否则卡片会把自己下面的桌面再画一遍，看起来比周围更暗）；
+                      传 0 表示完全不参与背景取样（对话框这类独立窗口用），
+                      此时白纱也不再自适应，按传入的 alpha 原样铺 —— 表单必须读得清。
+    """
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     path = rounded_path(rect, radius)
+    backdrop = _BACKDROP
+    palette = _PALETTE
+    show_backdrop = backdrop is not None and not backdrop.isNull() and backdrop_weight > 0.0
+    # ① 背后的桌面（已重度模糊）
+    if show_backdrop:
+        origin = offset or QPointF(0.0, 0.0)
+        source = QRectF(origin.x(), origin.y(), rect.width(), rect.height())
+        # 背景板比控件小的时候（缩放出岔子、HiDPI 换算错位），越界取样会让整块背景
+        # 直接消失。裁剪出有效区域再按比例映射回目标矩形，至少不会突然变成一张白纸。
+        valid = source.intersected(QRectF(0.0, 0.0, float(backdrop.width()), float(backdrop.height())))
+        if not valid.isEmpty():
+            kx = rect.width() / max(1e-6, source.width())
+            ky = rect.height() / max(1e-6, source.height())
+            dest = QRectF(
+                rect.left() + (valid.left() - source.left()) * kx,
+                rect.top() + (valid.top() - source.top()) * ky,
+                valid.width() * kx,
+                valid.height() * ky,
+            )
+            painter.save()
+            painter.setClipPath(path)
+            painter.setOpacity(max(0.0, min(1.0, backdrop_weight)))
+            painter.drawPixmap(dest, backdrop, valid)
+            painter.restore()
 
-    gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-    gradient.setColorAt(0.0, QColor(255, 255, 255, int(255 * min(1.0, alpha + 0.08))))
-    gradient.setColorAt(0.55, QColor(252, 253, 255, int(255 * alpha)))
-    gradient.setColorAt(1.0, QColor(243, 245, 250, int(255 * max(0.0, alpha - 0.06))))
-    painter.fillPath(path, QBrush(gradient))
+    # ② 白纱：中心厚、四边薄 —— 这就是"边缘融色"，澎湃那套玻璃最认的指纹
+    #
+    # 一片均匀的白纱会盖成一堵白墙；改成径向，中心保内容可读，四周薄下去，
+    # 壁纸的颜色就从边缘渗进来，一眼能看出这是一块"透着的"玻璃。
+    scrim = adaptive_scrim(alpha) if show_backdrop else alpha
+    edge = max(0.12, scrim * 0.58)
+    veil = QRadialGradient(
+        QPointF(rect.center().x(), rect.center().y() - rect.height() * 0.06),
+        max(rect.width(), rect.height()) * 0.82,
+    )
+    veil.setColorAt(0.0, QColor(255, 255, 255, int(255 * min(1.0, scrim + 0.06))))
+    veil.setColorAt(0.56, QColor(253, 254, 255, int(255 * scrim)))
+    veil.setColorAt(1.0, QColor(246, 248, 252, int(255 * edge)))
+    painter.fillPath(path, QBrush(veil))
 
+    # ③ 顶部受光：一条很薄的亮带，交代光从上边来
+    top_light = QLinearGradient(rect.topLeft(), QPointF(rect.left(), rect.top() + rect.height() * 0.34))
+    top_light.setColorAt(0.0, QColor(255, 255, 255, 66))
+    top_light.setColorAt(1.0, QColor(255, 255, 255, 0))
+    painter.fillPath(path, QBrush(top_light))
+
+    # ④ 环境色：从背景里借来的调子，斜向铺开，让四个角不完全一样
+    if show_backdrop and palette.saturation > 0.02:
+        env_gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        env_gradient.setColorAt(0.0, theme.color(palette.color.name(), min(0.22, palette.saturation * 0.75)))
+        env_gradient.setColorAt(0.55, theme.color(palette.color.name(), 0.05))
+        env_gradient.setColorAt(1.0, theme.color(palette.color.name(), 0.0))
+        painter.fillPath(path, QBrush(env_gradient))
+
+    # ⑤ 类型色：卡片用所属设备的颜色轻轻染一层
     if tint:
         tint_gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
         tint_gradient.setColorAt(0.0, theme.color(tint, tint_alpha))
         tint_gradient.setColorAt(1.0, theme.color(tint, 0.0))
         painter.fillPath(path, QBrush(tint_gradient))
 
+    # ⑥ 左上柔光（点按有光的那束光）
     if glow:
         radial = QRadialGradient(
             QPointF(rect.left() + rect.width() * 0.22, rect.top() - rect.height() * 0.12),
             rect.width() * 1.05,
         )
-        radial.setColorAt(0.0, QColor(255, 255, 255, 120))
-        radial.setColorAt(0.55, QColor(255, 255, 255, 26))
+        radial.setColorAt(0.0, QColor(255, 255, 255, 96))
+        radial.setColorAt(0.55, QColor(255, 255, 255, 24))
         radial.setColorAt(1.0, QColor(255, 255, 255, 0))
         painter.fillPath(path, QBrush(radial))
 
+    # ⑦ 磨砂颗粒：只留一点点，柔光玻璃是"润"的不是"砂"的
     painter.save()
     painter.setClipPath(path)
-    painter.setOpacity(0.5)
+    painter.setOpacity(0.12)
     painter.fillRect(rect, QBrush(noise_pixmap()))
     painter.restore()
 
-    # 外描边（自上而下由亮到几乎透明，制造玻璃厚度）
-    border = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-    border.setColorAt(0.0, QColor(255, 255, 255, int(255 * border_alpha)))
-    border.setColorAt(0.45, QColor(255, 255, 255, int(255 * border_alpha * 0.45)))
-    border.setColorAt(1.0, QColor(255, 255, 255, int(255 * border_alpha * 0.30)))
-    painter.strokePath(path, QPen(QBrush(border), 1.0))
-
-    hairline = QPen(QColor(28, 28, 30, 16), 1.0)
-    painter.strokePath(rounded_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius), hairline)
+    # ⑧ 厚度
+    paint_specular(painter, rect, radius, border_alpha=border_alpha)
     painter.restore()
 
 
@@ -177,6 +317,7 @@ class GlassSurface(QWidget):
         tint: Optional[str] = None,
         tint_alpha: float = 0.0,
         interactive: bool = False,
+        backdrop_weight: float = 1.0,
     ) -> None:
         super().__init__(parent)
         self.radius = radius
@@ -184,6 +325,7 @@ class GlassSurface(QWidget):
         self.tint = tint
         self.tint_alpha = tint_alpha
         self.interactive = interactive
+        self.backdrop_weight = backdrop_weight
         self.hovered = False
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         if interactive:
@@ -206,17 +348,28 @@ class GlassSurface(QWidget):
         self.tint_alpha = tint_alpha
         self.update()
 
+    def backdrop_offset(self) -> QPointF:
+        """本控件在窗口坐标里的左上角 —— 用来从背景图上抠出自己那块。"""
+        window = self.window()
+        if window is None or window is self:
+            return QPointF(0.0, 0.0)
+        point = self.mapTo(window, QPoint(0, 0))
+        return QPointF(float(point.x()), float(point.y()))
+
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        alpha = self.base_alpha + (0.10 if self.hovered else 0.0)
+        # 悬停时整块玻璃亮一点 —— 触摸要有回应
+        alpha = self.base_alpha + (0.12 if self.hovered else 0.0)
         paint_glass(
             painter,
             rect,
             self.radius,
-            alpha=min(0.95, alpha),
+            alpha=min(0.96, alpha),
             tint=self.tint,
-            tint_alpha=self.tint_alpha,
+            tint_alpha=self.tint_alpha + (0.06 if self.hovered else 0.0),
+            offset=self.backdrop_offset(),
+            backdrop_weight=self.backdrop_weight,
         )
         painter.end()
 

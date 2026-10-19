@@ -63,7 +63,14 @@ class DeviceCard(GlassSurface):
         style: str,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent, radius=20, alpha=0.50, interactive=True)
+        super().__init__(
+            parent,
+            radius=24,
+            alpha=0.42,
+            interactive=True,
+            # 卡片叠在外壳上：只透出一点点桌面，否则会因为重复画背景而比周围更暗
+            backdrop_weight=0.32,
+        )
         self.device_id = device_id
         self.type_label = type_label
         self._color = color

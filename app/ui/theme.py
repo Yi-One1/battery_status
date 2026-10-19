@@ -9,13 +9,18 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase
 
 TEXT_PRIMARY = "#1C1C1E"
 TEXT_SECONDARY = "#5C5C61"
-TEXT_TERTIARY = "#8E8E93"
+# 原来是 #8E8E93 —— 在纯白上只有 3.3:1，铺到会透壁纸色的玻璃上更低，
+# 页脚那行"最后同步刷新"几乎看不见。压深到 #6E6E76（白底 5.1:1，玻璃上 3.5~4.3:1），
+# 仍然明显轻于主文字，但小字终于读得清。
+TEXT_TERTIARY = "#6E6E76"
 DIVIDER = "rgba(60, 60, 67, 0.10)"
 SURFACE = "rgba(255, 255, 255, 0.62)"
 SURFACE_STRONG = "rgba(255, 255, 255, 0.86)"
 BORDER_SOFT = "rgba(255, 255, 255, 0.75)"
 ACCENT_BLUE = "#0A84FF"
 WARN = "#FF9F0A"
+# 徽标 / 小字号里用的警告色：WARN 本身在浅玻璃上只有 1.4:1，只能当图标和进度弧用
+WARN_TEXT = "#A05A00"
 DANGER = "#FF453A"
 OK = "#2FC48A"
 

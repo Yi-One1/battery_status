@@ -248,7 +248,9 @@ class AddDeviceDialog(QDialog):
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        paint_glass(painter, rect, 20, alpha=0.94, border_alpha=0.9)
+        # 对话框是独立窗口，面板那份背景板和它的位置对不上，所以不参与取样，
+        # 保持一块更实的柔光玻璃 —— 填 VID/PID 的表单首先得看得清。
+        paint_glass(painter, rect, 24, alpha=0.94, border_alpha=0.92, backdrop_weight=0.0)
         painter.end()
 
     # -- 拖拽（无边框窗口）--------------------------------------------------

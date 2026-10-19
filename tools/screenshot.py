@@ -9,39 +9,76 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPixmap, QRadialGradient
 from PySide6.QtWidgets import QApplication, QScrollArea
 
 from app.core.config import DeviceRegistry, SettingsStore
 from app.core.monitor import Monitor
 from app.ui import theme
+from app.ui.backdrop import analyse, blur_image
+from app.ui.glass import set_backdrop
 from app.ui.panel import Panel
 from app.ui.tray import TrayController
 
 
-def make_wallpaper(width: int, height: int) -> QPixmap:
+# 三档壁纸：预览只用 mid，light / dark 用来验证"自适应通透度"有没有真的动起来
+_WALLS: dict[str, tuple[str, list[tuple[float, float, float, str]]]] = {
+    # tone: (底色, [(x, y, radius, color), ...])
+    "light": (
+        "#EEF1F8",
+        [
+            (0.18, 0.22, 0.42, "#9DBEF5"),
+            (0.86, 0.12, 0.34, "#F5C79E"),
+            (0.72, 0.86, 0.46, "#9EDCCB"),
+            (0.08, 0.92, 0.30, "#C9B4F2"),
+        ],
+    ),
+    "mid": (
+        "#8FA9CC",
+        [
+            (0.16, 0.18, 0.40, "#4C6FB8"),
+            (0.88, 0.10, 0.38, "#E39A62"),
+            (0.76, 0.88, 0.44, "#3E9C8B"),
+            (0.06, 0.94, 0.34, "#7B5FB0"),
+            (0.50, 0.52, 0.30, "#C8D7EA"),
+        ],
+    ),
+    "dark": (
+        "#171A24",
+        [
+            (0.20, 0.16, 0.38, "#2D3E7A"),
+            (0.86, 0.14, 0.34, "#8A4A2A"),
+            (0.74, 0.88, 0.44, "#1B5E52"),
+            (0.08, 0.90, 0.32, "#412E6B"),
+        ],
+    ),
+}
+
+
+def make_wallpaper(width: int, height: int, tone: str = "mid") -> QPixmap:
+    base_color, blobs = _WALLS.get(tone, _WALLS["mid"])
     image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
-    image.fill(QColor("#E8ECF4"))
+    image.fill(QColor(base_color))
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
+    # 底色本身也给一点方向感，免得纯平
     base = QLinearGradient(0, 0, width, height)
-    base.setColorAt(0.0, QColor("#EEF1F8"))
-    base.setColorAt(0.5, QColor("#DFE6F2"))
-    base.setColorAt(1.0, QColor("#E9E3F1"))
+    top = QColor(base_color)
+    bottom = top.darker(118)
+    base.setColorAt(0.0, top)
+    base.setColorAt(1.0, bottom)
     painter.fillRect(0, 0, width, height, base)
 
-    blobs = [
-        (QPointF(width * 0.18, height * 0.22), width * 0.42, QColor(120, 160, 255, 150)),
-        (QPointF(width * 0.86, height * 0.12), width * 0.34, QColor(255, 190, 150, 130)),
-        (QPointF(width * 0.72, height * 0.86), width * 0.46, QColor(150, 220, 205, 130)),
-        (QPointF(width * 0.08, height * 0.92), width * 0.30, QColor(200, 170, 255, 120)),
-    ]
-    for center, radius, color in blobs:
+    for fx, fy, fr, color in blobs:
+        center = QPointF(width * fx, height * fy)
+        radius = width * fr
+        blob = QColor(color)
         radial = QRadialGradient(center, radius)
-        radial.setColorAt(0.0, color)
-        radial.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+        radial.setColorAt(0.0, QColor(blob.red(), blob.green(), blob.blue(), 215))
+        radial.setColorAt(0.55, QColor(blob.red(), blob.green(), blob.blue(), 120))
+        radial.setColorAt(1.0, QColor(blob.red(), blob.green(), blob.blue(), 0))
         painter.setBrush(radial)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(center, radius, radius)
@@ -49,48 +86,27 @@ def make_wallpaper(width: int, height: int) -> QPixmap:
     return QPixmap.fromImage(image)
 
 
-def blurred_shadow(width: int, height: int, radius: float, blur: int, color: QColor) -> QImage:
-    """缩到 1/8 画阴影形状再放大，得到平滑的高斯近似（形状四周留出 blur 边距）。"""
-    scale = 0.125
-    target_w, target_h = width + blur * 2, height + blur * 2
-    small = QImage(max(4, int(target_w * scale)), max(4, int(target_h * scale)), QImage.Format.Format_ARGB32_Premultiplied)
-    small.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(small)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(color)
-    painter.drawRoundedRect(
-        QRectF(blur * scale, blur * scale, width * scale, height * scale),
-        radius * scale,
-        radius * scale,
-    )
-    painter.end()
-    return small.scaled(
-        target_w,
-        target_h,
-        Qt.AspectRatioMode.IgnoreAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
+def composite(panel: Panel, out_path: Path, extra_w: int = 408, extra_h: int = 180, tone: str = "mid") -> None:
+    """把面板合成到柔和壁纸上。
 
+    关键一步：**用同一张壁纸喂给玻璃材质**。面板是叠在壁纸上的，
+    玻璃透出的必须是它背后那块壁纸，否则预览图会出现"玻璃里的桌面和背景不是一张图"。
+    """
+    size = panel.size()
+    wallpaper = make_wallpaper(size.width() + extra_w, size.height() + extra_h, tone)
+    x = (wallpaper.width() - size.width()) / 2
+    y = (wallpaper.height() - size.height()) / 2
 
-def composite(panel: Panel, out_path: Path, extra_w: int = 408, extra_h: int = 180) -> None:
-    # 先抓图再按真实尺寸生成壁纸：设置页会把窗口拉高，事先算好的尺寸会对不齐
+    behind = wallpaper.copy(QRect(int(x), int(y), size.width(), size.height())).toImage()
+    behind.setDevicePixelRatio(1.0)
+    set_backdrop(QPixmap.fromImage(blur_image(behind)), analyse(behind))
+
     shot = panel.grab()
-    wallpaper = make_wallpaper(shot.width() + extra_w, shot.height() + extra_h)
     canvas = wallpaper.copy()
     painter = QPainter(canvas)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    x = (canvas.width() - shot.width()) / 2
-    y = (canvas.height() - shot.height()) / 2
-    pad = 26
-    shadow = blurred_shadow(
-        shot.width() - 2 * pad,
-        shot.height() - 2 * pad,
-        28,
-        52,
-        QColor(22, 30, 52, 78),
-    )
-    painter.drawImage(QPoint(int(x - 52), int(y - 52 + 16)), shadow)
+    # 阴影由 shell 自己的 QGraphicsDropShadowEffect 画在 MARGIN 留白里，
+    # 这里再叠一层会变成双层阴影（边缘发脏），所以只贴图不补阴影。
     painter.drawPixmap(QPoint(int(x), int(y)), shot)
     painter.end()
     canvas.save(str(out_path), "PNG")
@@ -100,6 +116,10 @@ def composite(panel: Panel, out_path: Path, extra_w: int = 408, extra_h: int = 1
 def main() -> int:
     argv = [a for a in sys.argv[1:] if not a.startswith("--")]
     live = "--live" in sys.argv
+    tone = "mid"
+    for flag in sys.argv[1:]:
+        if flag.startswith("--wall="):
+            tone = flag.split("=", 1)[1] or "mid"
     out_dir = Path(argv[0]) if argv else Path("preview")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -146,9 +166,11 @@ def main() -> int:
         panel.show_panel()
 
     suffix = "" if live else "-demo"
+    if tone != "mid":
+        suffix = f"{suffix}-{tone}"
 
     def shoot_main() -> None:
-        composite(panel, out_dir / f"panel{suffix}.png")
+        composite(panel, out_dir / f"panel{suffix}.png", tone=tone)
         panel._toggle_settings()
         QTimer.singleShot(700, shoot_settings)
 
@@ -158,7 +180,7 @@ def main() -> int:
         for area in panel.settings.findChildren(QScrollArea):
             area.verticalScrollBar().setValue(0)
         app.processEvents()
-        composite(panel, out_dir / f"settings{suffix}.png", extra_w=288, extra_h=180)
+        composite(panel, out_dir / f"settings{suffix}.png", extra_w=288, extra_h=180, tone=tone)
         app.quit()
 
     QTimer.singleShot(3000 if live else 900, shoot_main)

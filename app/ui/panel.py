@@ -26,8 +26,9 @@ from ..core.monitor import Monitor
 from ..core.paths import resource_root
 from ..core.presence import filter_visible, hidden_devices
 from . import theme, winblur
+from .backdrop import capture_window_rect
 from .cards import DeviceCard
-from .glass import GlassSurface, IconButton, apply_shadow, paint_glass
+from .glass import GlassSurface, IconButton, apply_shadow, clear_backdrop, paint_glass, set_backdrop
 from .settings import SettingsPane
 from .tray import TrayController
 
@@ -46,15 +47,20 @@ class _Shell(GlassSurface):
     """窗体内层：整块大圆角玻璃。"""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent, radius=28, alpha=0.86)
+        super().__init__(parent, radius=30, alpha=0.74)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        paint_glass(painter, rect, self.radius, alpha=self.base_alpha, border_alpha=0.9)
-        # 顶部高光线，强化"玻璃厚度"
-        painter.setPen(Qt.PenStyle.NoPen)
+        paint_glass(
+            painter,
+            rect,
+            self.radius,
+            alpha=self.base_alpha,
+            border_alpha=0.92,
+            offset=self.backdrop_offset(),
+        )
         painter.end()
 
 
@@ -76,6 +82,7 @@ class Panel(QWidget):
         self._settings_open = False
         self._first_show = True
         self._shown_at = 0.0
+        self._has_backdrop = False
         self._build()
         self.monitor.discovered.connect(self._on_discovered)
 
@@ -99,7 +106,7 @@ class Panel(QWidget):
         root.setSpacing(0)
 
         self.shell = _Shell(self)
-        apply_shadow(self.shell, blur=42, dy=14, alpha=58)
+        apply_shadow(self.shell, blur=54, dy=18, alpha=44)
         root.addWidget(self.shell)
 
         column = QVBoxLayout(self.shell)
@@ -294,10 +301,33 @@ class Panel(QWidget):
             self._place_initial()
             self._first_show = False
         if not self.isVisible():
+            # 必须在 show() 之前截屏，否则截到的是自己
+            self._refresh_backdrop()
             self.show()
         self.raise_()
         self.activateWindow()
         self.monitor.refresh()
+
+    def _refresh_backdrop(self) -> None:
+        """把窗口背后的桌面做成玻璃的底，并从中取环境色。失败则回落静态玻璃。"""
+        result = capture_window_rect(self.frameGeometry())
+        if result is None:
+            clear_backdrop()
+            self._has_backdrop = False
+            self._apply_window_blur()
+            return
+        pixmap, palette = result
+        target = self.size()
+        if pixmap.size() != target:
+            pixmap = pixmap.scaled(
+                target,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        set_backdrop(pixmap, palette)
+        self._has_backdrop = True
+        log.debug("背景取样完成：亮度 %.2f，环境色 %s", palette.luminance, palette.color.name())
+        self._apply_window_blur()
 
     def open_settings(self) -> None:
         self.show_panel()
@@ -347,12 +377,17 @@ class Panel(QWidget):
         self._apply_window_blur()
 
     def _apply_window_blur(self) -> None:
-        if not self.store.prefs.glass_blur:
-            winblur.clear_acrylic(int(self.winId()))
-            self.shell.base_alpha = 0.86
-        else:
-            ok = winblur.apply_acrylic(int(self.winId()), tint="#F7F8FC", alpha=0x7A)
+        hwnd = int(self.winId())
+        if self._has_backdrop:
+            # 自己已经截屏模糊过了，再叠 DWM 模糊会糊成一片
+            winblur.clear_acrylic(hwnd)
+            self.shell.base_alpha = 0.74
+        elif self.store.prefs.glass_blur:
+            ok = winblur.apply_acrylic(hwnd, tint="#F7F8FC", alpha=0x7A)
             self.shell.base_alpha = 0.48 if ok else 0.86
+        else:
+            winblur.clear_acrylic(hwnd)
+            self.shell.base_alpha = 0.86
         self.shell.update()
 
     # ------------------------------------------------------------- 设备热插拔
@@ -479,7 +514,7 @@ class Panel(QWidget):
         if self.store.prefs.demo:
             self.chip.setText("演示数据")
             self.chip.setStyleSheet(
-                f"color: {theme.WARN}; background: rgba(255,159,10,0.14);"
+                f"color: {theme.WARN_TEXT}; background: rgba(255,159,10,0.18);"
                 "border-radius: 9px; padding: 3px 9px;"
             )
             self.chip.show()
