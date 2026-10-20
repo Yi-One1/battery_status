@@ -145,20 +145,26 @@ class TrayController(QObject):
         self.registry = registry
         self.store = store
         self._icons: list[QSystemTrayIcon] = []
+        # 图标对应的设备 id 序列。Windows 按创建顺序分配托盘槽位，
+        # 只换图不重建的话，槽位顺序不会跟随设备重排 —— 所以序列变化必须重建。
+        self._icon_ids: list[str] = []
         self._snapshots: dict[str, Snapshot] = {}
         self._menu = QMenu()
         self._menu.aboutToShow.connect(self._populate_menu)
         self._menu.setStyleSheet(theme.app_stylesheet())
 
     # -- 图标管理 -----------------------------------------------------------
-    def _ensure_icons(self, count: int) -> None:
+    def _ensure_icons(self, count: int, ids: Optional[list[str]] = None) -> None:
         count = max(1, count)
-        if len(self._icons) == count:
+        wanted_ids = [str(x) for x in (ids or [])]
+        if len(self._icons) == count and self._icon_ids == wanted_ids:
             return
         for icon in self._icons:
             icon.hide()
             icon.deleteLater()
         self._icons = []
+        # merged 模式不关心设备序列（ids 为 None），清空即可
+        self._icon_ids = wanted_ids if ids is not None else []
         for _ in range(count):
             tray = QSystemTrayIcon(self._menu)
             tray.setContextMenu(self._menu)
@@ -198,7 +204,8 @@ class TrayController(QObject):
             self._icons[0].setToolTip(self._tooltip())
             return
 
-        self._ensure_icons(len(devices))
+        # 传入 id 序列：顺序变化时重建图标，让 Windows 槽位跟着主界面重排
+        self._ensure_icons(len(devices), [d.id for d in devices])
         lines = []
         for index, cfg in enumerate(devices):
             snap = snapshots[cfg.id]
