@@ -99,3 +99,50 @@ def test_panel_visible_devices_follow_custom_order(qapp, tmp_path):
 
     panel = Panel(registry, store, monitor, tray)
     assert [d.id for d in panel.visible_devices()] == list(reversed(ids))
+
+
+def test_tray_icon_order_matches_panel_order(qapp, tmp_path, monkeypatch):
+    """托盘 per-device 图标顺序与主界面（行优先）完全一致。"""
+    from app.core.model import Snapshot
+    from app.ui import tray as tray_module
+    from app.ui.tray import TrayController
+
+    # 离屏环境里创建/析构 QSystemTrayIcon 会段错误，用哑元替身
+    from PySide6.QtCore import QObject, Signal as QtSignal
+
+    class _FakeTrayIcon(QObject):
+        activated = QtSignal(object)
+
+        def __init__(self, parent=None) -> None:
+            super().__init__(parent)
+            self.icons = []
+            self.tooltips = []
+
+        def setContextMenu(self, menu) -> None:
+            pass
+
+        def show(self) -> None:
+            pass
+
+        def setIcon(self, icon) -> None:
+            self.icons.append(icon)
+
+        def setToolTip(self, text) -> None:
+            self.tooltips.append(text)
+
+    monkeypatch.setattr(tray_module, "QSystemTrayIcon", _FakeTrayIcon)
+
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    ids = [d.id for d in registry.enabled_devices()]
+    store.prefs.device_order = list(reversed(ids))
+    tray = TrayController(registry, store)
+
+    snapshots = {
+        device_id: Snapshot(device_id=device_id, level=80, charging=False, online=True)
+        for device_id in ids
+    }
+    tray.update_snapshots(snapshots)
+
+    assert [d.id for d in tray._visible] == list(reversed(ids))
+    assert len(tray._icons) == len(ids)

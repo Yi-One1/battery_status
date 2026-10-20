@@ -188,10 +188,10 @@ class TrayController(QObject):
     def update_snapshots(self, snapshots: dict[str, Snapshot]) -> None:
         self._snapshots = snapshots
         prefs = self.store.prefs
-        # 断连久了被收起的设备不再占托盘坑位，否则用久了会攒出一排灰电池
-        devices = [
-            d for d in presence.filter_visible(self.registry.enabled_devices(), snapshots, prefs) if d.id in snapshots
-        ]
+        # 断连久了被收起的设备不再占托盘坑位，否则用久了会攒出一排灰电池；
+        # 顺序必须与主界面一致：同一套 ordered_devices 排序
+        visible = [d for d in presence.filter_visible(self.registry.enabled_devices(), snapshots, prefs) if d.id in snapshots]
+        devices = presence.ordered_devices(visible, prefs)
         self._visible = devices
         show_percent = prefs.tray_show_percent
 
