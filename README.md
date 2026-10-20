@@ -369,7 +369,7 @@ run.bat
 
 ## 五、许可证
 
-本项目采用 [MIT License](LICENSE)（Copyright © 2026 caihongyi），
+本项目采用 [MIT License](LICENSE)（Copyright © 2026 毅One），
 可自由使用、修改和分发，需保留版权与许可声明。
 
 用户配置与日志在 `%APPDATA%\BatteryGlass\`（`preferences.json` / `devices.json` / `app.log`）。
