@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -61,9 +62,17 @@ class SettingRow(QWidget):
         text_box = QVBoxLayout()
         text_box.setContentsMargins(0, 0, 0, 0)
         text_box.setSpacing(1)
-        text_box.addWidget(_label(title, 12.0, 500))
+        title_label = _label(title, 12.0, 500)
+        # 长副标题若不换行，其最小宽度会把右侧控件推出面板边界（设置页超宽的根因）
+        title_label.setMinimumWidth(0)
+        title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        text_box.addWidget(title_label)
         if subtitle:
-            text_box.addWidget(_label(subtitle, 10.0, 400, theme.TEXT_TERTIARY))
+            sub = _label(subtitle, 10.0, 400, theme.TEXT_TERTIARY)
+            sub.setWordWrap(True)
+            sub.setMinimumWidth(0)
+            sub.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            text_box.addWidget(sub)
         layout.addLayout(text_box, 1)
         if control is not None:
             layout.addWidget(control, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
