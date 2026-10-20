@@ -159,7 +159,9 @@ class BatteryGauge(QWidget):
         fm_num = QFontMetricsF(font_num)
         fm_pct = QFontMetricsF(font_pct)
         num_width = fm_num.horizontalAdvance(text)
-        has_suffix = self._level is not None and not self._charging
+        # 电量可读时一律带 % 符号（含充电中），与其它设备保持一致；
+        # 充电占位符的 ⚡ 由上方分支处理，不会走到这里
+        has_suffix = self._level is not None
         suffix_width = fm_pct.horizontalAdvance("%") + 1.5 if has_suffix else 0.0
         total = num_width + suffix_width
         left = rect.center().x() - total / 2
@@ -225,17 +227,18 @@ class BatteryGauge(QWidget):
         )
         if not self._charging_placeholder:
             painter.setFont(theme.font(12, 600))
-            if self._charging:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(theme.OK))
-                painter.drawPath(_bolt_path(QPointF(rect.left() + num_width + 14, rect.center().y()), 11))
-            elif self._level is not None:
+            if self._level is not None:
+                # 电量可读时统一带 %，充电状态交给下方状态行说明
                 painter.setPen(QColor(theme.TEXT_TERTIARY))
                 painter.drawText(
                     QRectF(rect.left() + num_width + 2, rect.center().y() + 2, 20, 16),
                     int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                     "%",
                 )
+            elif self._charging:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(theme.OK))
+                painter.drawPath(_bolt_path(QPointF(rect.left() + num_width + 14, rect.center().y()), 11))
 
         ratio = 1.0 if self._charging_placeholder else (0.0 if self._level is None else max(0.0, min(1.0, self._level / 100.0)))
         underline = QRectF(rect.left(), rect.bottom() - 6, rect.width(), 3)
