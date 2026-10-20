@@ -228,6 +228,7 @@ def paint_glass(
     glow: bool = True,
     offset: Optional[QPointF] = None,
     backdrop_weight: float = 1.0,
+    solid: bool = False,
 ) -> None:
     """绘制一块柔光玻璃。
 
@@ -236,10 +237,17 @@ def paint_glass(
                       （否则卡片会把自己下面的桌面再画一遍，看起来比周围更暗）；
                       传 0 表示完全不参与背景取样（对话框这类独立窗口用），
                       此时白纱也不再自适应，按传入的 alpha 原样铺 —— 表单必须读得清。
+    solid             纯白不透明模式：跳过白纱/噪点/柔光等玻璃笔触，整块填实心白。
+                      白纱渐变的边缘只有 ~0.58 不透明度，靠调 alpha 到不了全不透明。
     """
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     path = rounded_path(rect, radius)
+    if solid:
+        painter.fillPath(path, QColor(255, 255, 255, 255))
+        paint_specular(painter, rect, radius, border_alpha=border_alpha)
+        painter.restore()
+        return
     backdrop = _BACKDROP
     palette = _PALETTE
     show_backdrop = backdrop is not None and not backdrop.isNull() and backdrop_weight > 0.0

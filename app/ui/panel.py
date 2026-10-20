@@ -59,6 +59,8 @@ class _Shell(GlassSurface):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent, radius=30, alpha=SHELL_ALPHA_WITH_BACKDROP)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # 纯白模式整块不透明，由 _apply_window_blur 依据背景模式开关
+        self.solid = False
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -70,6 +72,7 @@ class _Shell(GlassSurface):
             alpha=self.base_alpha,
             border_alpha=0.92,
             offset=self.backdrop_offset(),
+            solid=self.solid,
         )
         painter.end()
 
@@ -442,15 +445,17 @@ class Panel(QWidget):
         super().hideEvent(event)
 
     def _apply_window_blur(self) -> None:
-        """根据背景模式决定外壳不透明度：
+        """根据背景模式决定外壳画法：
 
-        - 柔光玻璃 / 高斯模糊：有底图时让壁纸透上来，无底图时更实一些。
-        - 纯白色：不截屏，直接用接近实色的白底。
+        - 纯白色：整块不透明实心白（solid），与桌面彻底隔开。
+        - 柔光玻璃：有底图时让壁纸透上来，无底图时更实一些。
         """
         mode = self.store.prefs.background_mode
         if mode == BACKGROUND_WHITE:
-            self.shell.base_alpha = SHELL_ALPHA_STATIC
+            self.shell.solid = True
+            self.shell.base_alpha = 1.0
         else:
+            self.shell.solid = False
             self.shell.base_alpha = shell_alpha(self._has_backdrop)
         self.shell.update()
 
