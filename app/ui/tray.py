@@ -167,23 +167,10 @@ class TrayController(QObject):
             self._icons.append(tray)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        prefs = self.store.prefs
+        # 单击固定为「切换主面板」，且面板打开时总落在电量显示页（Panel.show_panel 负责）；
+        # 双击功能已删除：Windows 双击前会先发一次 Trigger，这里忽略 DoubleClick 即可。
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            action = prefs.tray_click_action
-            if action == "show":
-                self.show_panel.emit()
-            elif action == "settings":
-                self.show_settings.emit()
-            else:
-                self.toggle_requested.emit()
-        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            action = prefs.tray_double_click_action
-            if action == "show":
-                self.show_panel.emit()
-            elif action == "settings":
-                self.show_settings.emit()
-            else:
-                self.toggle_requested.emit()
+            self.toggle_requested.emit()
 
     def update_snapshots(self, snapshots: dict[str, Snapshot]) -> None:
         self._snapshots = snapshots

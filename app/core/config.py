@@ -460,9 +460,6 @@ class Preferences:
     background_mode: str = BACKGROUND_LIVE_GLASS
     auto_hide_offline: bool = True
     offline_hide_minutes: int = DEFAULT_OFFLINE_HIDE_MINUTES
-    # 托盘图标点击行为
-    tray_click_action: str = "toggle"
-    tray_double_click_action: str = "settings"
 
     # -- 序列化 -------------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
@@ -498,10 +495,6 @@ class Preferences:
         prefs.offline_hide_minutes = max(1, min(720, prefs.offline_hide_minutes))
         if prefs.tray_mode not in ("per-device", "merged"):
             prefs.tray_mode = DEFAULT_TRAY_MODE
-        if prefs.tray_click_action not in ("toggle", "show", "settings"):
-            prefs.tray_click_action = "toggle"
-        if prefs.tray_double_click_action not in ("toggle", "show", "settings"):
-            prefs.tray_double_click_action = "settings"
         prefs.sanitize_types(registry)
         prefs.sanitize_devices()
         return prefs

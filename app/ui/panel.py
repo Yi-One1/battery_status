@@ -340,6 +340,10 @@ class Panel(QWidget):
             self.show()
         self.raise_()
         self.activateWindow()
+        # 无论上次关闭时停在设置页还是电量页，打开时一律回到电量显示页；
+        # 托盘菜单里的「设置…」走 open_settings()，会在此之后重新切到设置页。
+        if self._settings_open:
+            self._toggle_settings()
         self.monitor.refresh()
 
     def _refresh_backdrop(self) -> None:

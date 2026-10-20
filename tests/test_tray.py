@@ -103,3 +103,49 @@ def test_device_line_uses_display_level():
     )
     line = tray._device_line("迈从 G98 PRO", normal)
     assert "83%" in line
+
+
+def test_tray_single_click_toggles_and_double_click_ignored(qapp):
+    """单击只发 toggle 信号；双击功能已删除，DoubleClick 不触发任何动作。"""
+    from PySide6.QtWidgets import QSystemTrayIcon
+
+    from app.core.config import DeviceRegistry, SettingsStore
+    from app.ui.tray import TrayController
+
+    registry = DeviceRegistry()
+    store = SettingsStore(registry)
+    tray = TrayController(registry, store)
+
+    events: list[str] = []
+    tray.toggle_requested.connect(lambda: events.append("toggle"))
+    tray.show_panel.connect(lambda: events.append("show"))
+    tray.show_settings.connect(lambda: events.append("settings"))
+
+    tray._on_activated(QSystemTrayIcon.ActivationReason.Trigger)
+    tray._on_activated(QSystemTrayIcon.ActivationReason.DoubleClick)
+
+    assert events == ["toggle"], f"单击应只发一次 toggle，双击应被忽略：{events}"
+
+
+def test_show_panel_always_lands_on_battery_page(qapp, tmp_path, monkeypatch):
+    """无论上次关闭时停在设置页还是电量页，show_panel 一律回到电量显示页。"""
+    from app.core.config import DeviceRegistry, SettingsStore
+    from app.core.monitor import Monitor
+    from app.ui.panel import Panel
+    from app.ui.tray import TrayController
+
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    monitor = Monitor(registry, store.prefs)
+    tray = TrayController(registry, store)
+    panel = Panel(registry, store, monitor, tray)
+    monkeypatch.setattr(panel.monitor, "refresh", lambda: None)
+
+    # 模拟上次关闭时停在设置页
+    panel._settings_open = True
+    panel.stack.setCurrentWidget(panel.settings)
+
+    panel.show_panel()
+
+    assert panel._settings_open is False
+    assert panel.stack.currentWidget() is panel._page

@@ -181,19 +181,6 @@ class SettingsPane(QWidget):
         self.tray_percent.toggled.connect(self._on_tray_percent)
         column.addWidget(SettingRow("图标内显示百分比", "图标更直观，但小尺寸下数字较挤", self.tray_percent))
 
-        TRAY_ACTIONS = [("toggle", "切换显示"), ("show", "电量界面"), ("settings", "设置页")]
-        self.tray_click = SegmentedControl(TRAY_ACTIONS, height=24)
-        self.tray_click.set_value(store.prefs.tray_click_action)
-        self.tray_click.setFixedWidth(202)
-        self.tray_click.changed.connect(self._on_tray_click)
-        column.addWidget(SettingRow("左键单击", "点击托盘图标后打开哪个界面", self.tray_click))
-
-        self.tray_double_click = SegmentedControl(TRAY_ACTIONS, height=24)
-        self.tray_double_click.set_value(store.prefs.tray_double_click_action)
-        self.tray_double_click.setFixedWidth(202)
-        self.tray_double_click.changed.connect(self._on_tray_double_click)
-        column.addWidget(SettingRow("左键双击", "双击托盘图标后打开哪个界面", self.tray_double_click))
-
         column.addWidget(Divider())
         column.addWidget(self._section("监测与提醒"))
 
@@ -561,14 +548,6 @@ class SettingsPane(QWidget):
 
     def _on_tray_percent(self, checked: bool) -> None:
         self.store.prefs.tray_show_percent = checked
-        self._commit()
-
-    def _on_tray_click(self, value: str) -> None:
-        self.store.prefs.tray_click_action = value
-        self._commit()
-
-    def _on_tray_double_click(self, value: str) -> None:
-        self.store.prefs.tray_double_click_action = value
         self._commit()
 
     def _on_interval(self, value: int) -> None:
