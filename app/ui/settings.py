@@ -170,12 +170,6 @@ class SettingsPane(QWidget):
 
         column.addWidget(Divider())
         column.addWidget(self._section("托盘"))
-        self.tray_mode = SegmentedControl([("per-device", "每设备独立"), ("merged", "合并一个")])
-        self.tray_mode.set_value(store.prefs.tray_mode)
-        self.tray_mode.setFixedWidth(150)
-        self.tray_mode.changed.connect(self._on_tray_mode)
-        column.addWidget(SettingRow("托盘图标", "每个设备一个图标，或合并显示最低电量", self.tray_mode))
-
         self.tray_percent = ToggleSwitch()
         self.tray_percent.setChecked(store.prefs.tray_show_percent)
         self.tray_percent.toggled.connect(self._on_tray_percent)
@@ -540,10 +534,6 @@ class SettingsPane(QWidget):
 
     def _on_style(self, key: str, value: str) -> None:
         self.store.prefs.styles[key] = value
-        self._commit()
-
-    def _on_tray_mode(self, value: str) -> None:
-        self.store.prefs.tray_mode = value
         self._commit()
 
     def _on_tray_percent(self, checked: bool) -> None:

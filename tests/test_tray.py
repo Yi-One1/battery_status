@@ -13,6 +13,45 @@ def _ensure_qapp():
         QApplication(["test"])
 
 
+def _install_fake_tray(monkeypatch) -> list:
+    """离屏环境替身：记录创建的托盘图标及其图标/提示文本。"""
+    from PySide6.QtCore import QObject, Signal as QtSignal
+
+    from app.ui import tray as tray_module
+
+    created: list = []
+
+    class _FakeTrayIcon(QObject):
+        activated = QtSignal(object)
+
+        def __init__(self, parent=None) -> None:
+            super().__init__(parent)
+            self.icons: list = []
+            self.tooltips: list = []
+            created.append(self)
+
+        def setContextMenu(self, menu) -> None:
+            pass
+
+        def show(self) -> None:
+            pass
+
+        def hide(self) -> None:
+            pass
+
+        def deleteLater(self) -> None:
+            pass
+
+        def setIcon(self, icon) -> None:
+            self.icons.append(icon)
+
+        def setToolTip(self, text) -> None:
+            self.tooltips.append(text)
+
+    monkeypatch.setattr(tray_module, "QSystemTrayIcon", _FakeTrayIcon)
+    return created
+
+
 def _capture_texts(monkeypatch) -> list[str]:
     """劫持 QPainter.drawText，返回绘制的所有文本。"""
     captured: list[str] = []
@@ -149,3 +188,54 @@ def test_show_panel_always_lands_on_battery_page(qapp, tmp_path, monkeypatch):
 
     assert panel._settings_open is False
     assert panel.stack.currentWidget() is panel._page
+
+
+def test_tray_placeholder_icon_when_no_devices(qapp, tmp_path, monkeypatch):
+    """没有任何可见设备时保留一枚占位图标，托盘入口不消失。"""
+    from app.core.config import DeviceRegistry, SettingsStore
+    from app.core.model import Snapshot
+    from app.ui.tray import TrayController
+
+    _install_fake_tray(monkeypatch)
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    tray = TrayController(registry, store)
+
+    tray.update_snapshots({})
+    assert len(tray._icons) == 1
+    assert tray._icons[0].tooltips[-1] == "外设电量 · 未检测到设备"
+    assert tray._icon_ids == []
+
+    # 设备恢复后占位图标让位给独立图标
+    device_id = registry.enabled_devices()[0].id
+    tray.update_snapshots(
+        {device_id: Snapshot(device_id=device_id, level=80, charging=False, online=True)}
+    )
+    assert len(tray._icons) == 1
+    assert tray._icon_ids == [device_id]
+
+
+def test_tray_per_device_independent_icons(qapp, tmp_path, monkeypatch):
+    """每台可见设备一枚独立图标，提示各对应自己的设备。"""
+    from app.core.config import DeviceRegistry, SettingsStore
+    from app.core.model import Snapshot
+    from app.ui.tray import TrayController
+
+    _install_fake_tray(monkeypatch)
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    tray = TrayController(registry, store)
+
+    ids = [d.id for d in registry.enabled_devices()]
+    assert len(ids) >= 2
+    snapshots = {
+        device_id: Snapshot(device_id=device_id, level=80, charging=False, online=True)
+        for device_id in ids
+    }
+    tray.update_snapshots(snapshots)
+
+    assert len(tray._icons) == len(ids)
+    assert tray._icon_ids == ids
+    for icon, device_id in zip(tray._icons, tray._icon_ids):
+        cfg = registry.get(device_id)
+        assert cfg.display_name in icon.tooltips[-1]

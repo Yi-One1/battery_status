@@ -1,9 +1,8 @@
 """托盘：动态绘制电量图标 + 右键菜单。
 
 图标完全由代码绘制（QPainter），跟随每类外设的自定义颜色变化，不需要图片资源。
-两种模式：
-  per-device —— 每个设备一个托盘图标，颜色区分类型，填充量即电量
-  merged     —— 只留一个图标，显示最低电量设备的颜色与电量
+每台可见设备固定一枚独立图标，顺序与主界面一致（行优先）；
+可在设置页按设备隐藏托盘显示。全部隐藏/无设备时回落一枚灰色占位图标。
 """
 from __future__ import annotations
 
@@ -188,20 +187,11 @@ class TrayController(QObject):
         self._visible = devices
         show_percent = prefs.tray_show_percent
 
-        if prefs.tray_mode == "merged" or len(devices) <= 1:
+        if not devices:
+            # 一台可见设备都没有：保留一枚灰色占位图标，应用仍能从托盘打开
             self._ensure_icons(1)
-            snap, cfg = self._lowest(devices)
-            if snap is None or cfg is None:
-                self._icons[0].setIcon(battery_icon(None, theme.ACCENT_BLUE, offline=True))
-                self._icons[0].setToolTip("外设电量 · 未检测到设备")
-                return
-            color = prefs.color_for_device(cfg)
-            self._icons[0].setIcon(
-                battery_icon(
-                    snap.display_level, color, bool(snap.display_charging), show_percent, not snap.online
-                )
-            )
-            self._icons[0].setToolTip(self._tooltip())
+            self._icons[0].setIcon(battery_icon(None, theme.ACCENT_BLUE, offline=True))
+            self._icons[0].setToolTip("外设电量 · 未检测到设备")
             return
 
         # 传入 id 序列：顺序变化时重建图标，让 Windows 槽位跟着主界面重排
@@ -229,20 +219,6 @@ class TrayController(QObject):
             if snap:
                 lines.append(self._device_line(cfg.display_name, snap))
         return "\n".join(lines) or "外设电量"
-
-    def _lowest(self, devices: list) -> tuple[Optional[Snapshot], Optional[object]]:
-        best_snap: Optional[Snapshot] = None
-        best_cfg = None
-        for cfg in devices:
-            snap = self._snapshots.get(cfg.id)
-            if snap is None or snap.level is None:
-                continue
-            if best_snap is None or best_snap.level is None or snap.level < best_snap.level:
-                best_snap, best_cfg = snap, cfg
-        if best_snap is None and devices:
-            cfg = devices[0]
-            return self._snapshots.get(cfg.id), cfg
-        return best_snap, best_cfg
 
     # -- 菜单 ---------------------------------------------------------------
     def _populate_menu(self) -> None:

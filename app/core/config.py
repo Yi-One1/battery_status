@@ -25,7 +25,6 @@ from .paths import bundled_config_dir, user_data_dir
 
 log = logging.getLogger(__name__)
 
-DEFAULT_TRAY_MODE = "per-device"
 STYLES = ("ring", "bar", "number")
 
 SOURCE_BUILTIN = "builtin"
@@ -445,7 +444,6 @@ class Preferences:
     device_colors: dict[str, str] = field(default_factory=dict)
     device_styles: dict[str, str] = field(default_factory=dict)
     refresh_seconds: int = 60
-    tray_mode: str = DEFAULT_TRAY_MODE
     tray_show_percent: bool = False
     autostart: bool = False
     start_minimized: bool = True
@@ -493,8 +491,6 @@ class Preferences:
         prefs.refresh_seconds = max(10, min(600, prefs.refresh_seconds))
         prefs.low_battery_threshold = max(0, min(90, prefs.low_battery_threshold))
         prefs.offline_hide_minutes = max(1, min(720, prefs.offline_hide_minutes))
-        if prefs.tray_mode not in ("per-device", "merged"):
-            prefs.tray_mode = DEFAULT_TRAY_MODE
         prefs.sanitize_types(registry)
         prefs.sanitize_devices()
         return prefs
