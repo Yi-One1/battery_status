@@ -39,6 +39,17 @@ def test_ordered_devices_empty_order_is_noop():
     assert [d.id for d in ordered_devices(devices, prefs)] == ["a", "b"]
 
 
+def test_tray_visible_devices_filters_hidden():
+    from app.core.presence import tray_visible_devices
+
+    devices = [_cfg("a"), _cfg("b"), _cfg("c")]
+    prefs = Preferences()
+    prefs.tray_hidden_devices = ["a", "ghost"]
+    assert [d.id for d in tray_visible_devices(devices, prefs)] == ["b", "c"]
+    prefs.tray_hidden_devices = []
+    assert [d.id for d in tray_visible_devices(devices, prefs)] == ["a", "b", "c"]
+
+
 def test_preferences_device_order_roundtrip(tmp_path):
     registry = DeviceRegistry(user_dir=tmp_path)
     store = SettingsStore(registry, path=tmp_path / "preferences.json")
@@ -82,6 +93,25 @@ def test_settings_move_device_at_boundary_is_noop(qapp, tmp_path):
     first = [d.id for d in registry.enabled_devices()][0]
     pane._on_move_device(first, -1)
     assert store.prefs.device_order == []  # 没有可移动空间时不写顺序
+
+
+def test_settings_tray_toggle_persists(qapp, tmp_path):
+    """设备行的「托盘」开关写入 tray_hidden_devices 并落盘，可反复切换。"""
+    from app.ui.settings import SettingsPane
+
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    pane = SettingsPane(registry, store)
+
+    device_id = registry.enabled_devices()[0].id
+
+    pane._on_device_tray_visible(device_id, False)
+    assert store.prefs.tray_hidden_devices == [device_id]
+    again = SettingsStore(registry, path=tmp_path / "preferences.json")
+    assert again.prefs.tray_hidden_devices == [device_id]
+
+    pane._on_device_tray_visible(device_id, True)
+    assert store.prefs.tray_hidden_devices == []
 
 
 def test_panel_visible_devices_follow_custom_order(qapp, tmp_path):

@@ -239,3 +239,51 @@ def test_tray_per_device_independent_icons(qapp, tmp_path, monkeypatch):
     for icon, device_id in zip(tray._icons, tray._icon_ids):
         cfg = registry.get(device_id)
         assert cfg.display_name in icon.tooltips[-1]
+
+
+def test_tray_hidden_device_gets_no_icon(qapp, tmp_path, monkeypatch):
+    """被隐藏的设备不出现在托盘（图标与菜单列表都没有），主界面不受影响。"""
+    from app.core.config import DeviceRegistry, SettingsStore
+    from app.core.model import Snapshot
+    from app.ui.tray import TrayController
+
+    _install_fake_tray(monkeypatch)
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    ids = [d.id for d in registry.enabled_devices()]
+    assert len(ids) >= 2
+    store.prefs.tray_hidden_devices = [ids[0]]
+    tray = TrayController(registry, store)
+
+    snapshots = {
+        device_id: Snapshot(device_id=device_id, level=80, charging=False, online=True)
+        for device_id in ids
+    }
+    tray.update_snapshots(snapshots)
+
+    assert tray._icon_ids == ids[1:]
+    assert ids[0] not in [d.id for d in tray._visible]
+
+
+def test_tray_all_hidden_falls_back_to_placeholder(qapp, tmp_path, monkeypatch):
+    """全部设备都被隐藏时回落占位图标，托盘入口不消失。"""
+    from app.core.config import DeviceRegistry, SettingsStore
+    from app.core.model import Snapshot
+    from app.ui.tray import TrayController
+
+    _install_fake_tray(monkeypatch)
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    ids = [d.id for d in registry.enabled_devices()]
+    store.prefs.tray_hidden_devices = list(ids)
+    tray = TrayController(registry, store)
+
+    snapshots = {
+        device_id: Snapshot(device_id=device_id, level=80, charging=False, online=True)
+        for device_id in ids
+    }
+    tray.update_snapshots(snapshots)
+
+    assert len(tray._icons) == 1
+    assert tray._icons[0].tooltips[-1] == "外设电量 · 未检测到设备"
+    assert tray._icon_ids == []

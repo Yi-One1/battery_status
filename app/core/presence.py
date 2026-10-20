@@ -80,6 +80,12 @@ def ordered_devices(devices: Iterable[DeviceConfig], prefs: Preferences) -> list
     return [device for _, device in ranked]
 
 
+def tray_visible_devices(devices: Iterable[DeviceConfig], prefs: Preferences) -> list[DeviceConfig]:
+    """托盘可见设备：剔除被用户隐藏的设备（主界面显示不受影响）。"""
+    hidden = {str(x) for x in (prefs.tray_hidden_devices or [])}
+    return [d for d in devices if d.id not in hidden]
+
+
 def hidden_devices(
     devices: Iterable[DeviceConfig],
     snapshots: dict[str, Snapshot],

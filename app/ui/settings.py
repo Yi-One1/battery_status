@@ -380,6 +380,17 @@ class SettingsPane(QWidget):
         self._device_hints[cfg.id] = hint
         bottom.addWidget(hint, 1)
 
+        # 托盘显示开关：只影响托盘图标，主界面卡片不变
+        tray_label = _label("托盘", 10.0, 400, theme.TEXT_TERTIARY)
+        bottom.addWidget(tray_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        tray_toggle = ToggleSwitch(width=36, height=20)
+        tray_toggle.setChecked(cfg.id not in self.store.prefs.tray_hidden_devices)
+        tray_toggle.setToolTip(
+            f"在系统托盘显示「{cfg.display_name}」的独立图标；关闭后仅主界面保留该设备"
+        )
+        tray_toggle.toggled.connect(lambda visible, did=cfg.id: self._on_device_tray_visible(did, visible))
+        bottom.addWidget(tray_toggle, 0, Qt.AlignmentFlag.AlignVCenter)
+
         segmented = SegmentedControl(STYLE_OPTIONS, height=22)
         segmented.setFixedWidth(126)
         segmented.set_value(self.store.prefs.style_for_device(cfg))
@@ -408,6 +419,14 @@ class SettingsPane(QWidget):
         if not self.store.prefs.set_device_style(device_id, value):
             return
         self._refresh_device_hint(device_id)
+        self._commit()
+
+    def _on_device_tray_visible(self, device_id: str, visible: bool) -> None:
+        """按设备开关托盘显示：只写 tray_hidden_devices，主界面顺序/颜色不受影响。"""
+        hidden = [x for x in self.store.prefs.tray_hidden_devices if x != device_id]
+        if not visible:
+            hidden.append(device_id)
+        self.store.prefs.tray_hidden_devices = hidden
         self._commit()
 
     def _on_move_device(self, device_id: str, delta: int) -> None:
