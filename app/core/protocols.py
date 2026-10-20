@@ -154,9 +154,16 @@ class HidppSession:
             return "asleep"
 
     def read_battery(self, device_index: int) -> Reading:
+        # 设备已经被 hidpp_probe 确认存在。读电量时如果超时，大概率是鼠标
+        # 进入了休眠（罗技 HID++ 常见行为），应返回 sleeping=True 而不是
+        # 直接 offline，避免鼠标静止一会儿就被误判成"未连接"。
+        any_feature = False
+        timed_out = False
+
         # ① UNIFIED_BATTERY（新固件首选）
         index = self.get_feature(device_index, FEATURE_UNIFIED_BATTERY)
         if index:
+            any_feature = True
             try:
                 reply = self.request(device_index, index, 0x01)
                 if len(reply) >= 7 and reply[4] <= 100:
@@ -171,12 +178,15 @@ class HidppSession:
                         ok=True,
                         detail=f"HID++ 0x1004 · 状态 0x{reply[5]:02X} 充电类型 {charging_type}",
                     )
-            except (HidppError, HidppTimeout):
+            except HidppTimeout:
+                timed_out = True
+            except HidppError:
                 pass
 
         # ② BATTERY_STATUS（老固件）
         index = self.get_feature(device_index, FEATURE_BATTERY_STATUS)
         if index:
+            any_feature = True
             try:
                 reply = self.request(device_index, index, 0x00)
                 if len(reply) >= 7 and reply[4] <= 100:
@@ -188,12 +198,15 @@ class HidppSession:
                         ok=True,
                         detail=f"HID++ 0x1000 · 状态 0x{status:02X}",
                     )
-            except (HidppError, HidppTimeout):
+            except HidppTimeout:
+                timed_out = True
+            except HidppError:
                 pass
 
         # ③ BATTERY_VOLTAGE（毫伏换算）
         index = self.get_feature(device_index, FEATURE_BATTERY_VOLTAGE)
         if index:
+            any_feature = True
             try:
                 reply = self.request(device_index, index, 0x00)
                 if len(reply) >= 7:
@@ -206,8 +219,13 @@ class HidppSession:
                             ok=True,
                             detail=f"HID++ 0x1001 · {millivolts} mV",
                         )
-            except (HidppError, HidppTimeout):
+            except HidppTimeout:
+                timed_out = True
+            except HidppError:
                 pass
+
+        if any_feature and timed_out:
+            return Reading.fail("设备休眠中，动一下鼠标即可刷新", sleeping=True)
         return Reading.fail("HID++ 设备未返回电量")
 
 

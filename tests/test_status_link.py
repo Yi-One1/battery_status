@@ -286,6 +286,27 @@ def test_wired_path_is_preferred_over_wireless(monkeypatch):
     assert reading.level == 71
 
 
+def test_mouse_sleep_timeout_is_reported_as_sleeping(monkeypatch):
+    """HID++ 已配对设备读电量超时，应判为休眠而不是离线。"""
+    monkeypatch.setattr(protocols, "device_caps", lambda path: _Caps())
+    monkeypatch.setattr(protocols, "HidHandle", _FakeHandle)
+    monkeypatch.setattr(protocols, "HidppSession", _FakeSession)
+    monkeypatch.setattr(
+        protocols,
+        "hidpp_probe",
+        lambda session, path, force=False: HidppProbe(devices=[HidppDevice(index=1, name="PRO X Superlight")]),
+    )
+
+    def sleeping_battery(self, index: int) -> Reading:
+        return Reading.fail("设备休眠中，动一下鼠标即可刷新", sleeping=True)
+
+    monkeypatch.setattr(protocols.HidppSession, "read_battery", sleeping_battery)
+
+    reading = protocols.read_logitech(_logitech_cfg(), _info())
+    assert reading.sleeping is True
+    assert reading.ok is False
+
+
 # --------------------------------------------------------------------------- #
 # 配置里的静态链路声明（接收器类设备）
 # --------------------------------------------------------------------------- #
