@@ -245,7 +245,9 @@ def paint_glass(
     path = rounded_path(rect, radius)
     if solid:
         painter.fillPath(path, QColor(255, 255, 255, 255))
-        paint_specular(painter, rect, radius, border_alpha=border_alpha)
+        # 白色桌面上的白色面板必须有看得清的边界：一道浅灰细描边
+        # （玻璃模式的白色高光描边在这里会隐身，故 solid 单独用灰色）
+        painter.strokePath(path, QPen(QColor(0, 0, 0, 40), 1.2))
         painter.restore()
         return
     backdrop = _BACKDROP

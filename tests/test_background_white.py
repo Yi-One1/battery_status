@@ -54,6 +54,30 @@ def test_glass_paint_glass_without_solid_keeps_translucent_edge():
     assert edge.green() > 0 or edge.alpha() < 255, "非 solid 模式边缘应当是半透明的玻璃质感"
 
 
+def test_solid_paint_glass_border_visible_on_white():
+    """白色桌面上，solid 面板边缘要有可辨认的灰色描边，而不是白色高光隐身。"""
+    from app.ui import glass
+
+    glass.clear_backdrop()
+    image = QImage(80, 80, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(QColor(255, 255, 255))  # 纯白底：模拟白色桌面/白色窗口
+    painter = QPainter(image)
+    glass.paint_glass(painter, QRectF(4, 4, 72, 72), 18.0, alpha=0.86, solid=True)
+    painter.end()
+
+    center = image.pixelColor(40, 40)
+    assert center.red() == 255, f"中心应为纯白：{center.name()}"
+
+    # 直边描边处：灰色（非纯白），且三个通道一致（是灰不是彩色杂边）
+    border = image.pixelColor(4, 40)
+    assert border.alpha() == 255, f"边界像素应为不透明：{border.name()}"
+    assert border.red() < 250, f"边界太亮，白色桌面上会隐身：{border.name()}"
+    assert border.red() > 150, f"边界太黑，不像浅灰描边：{border.name()}"
+    assert abs(border.red() - border.green()) < 8 and abs(border.red() - border.blue()) < 8, (
+        f"边界应为中性灰：{border.name()}"
+    )
+
+
 def test_white_mode_shell_is_solid_and_opaque(qapp, tmp_path):
     """Panel 在纯白模式：外壳 solid=True 且 alpha=1.0；切回柔光玻璃恢复。"""
     from app.core.config import DeviceRegistry, SettingsStore
