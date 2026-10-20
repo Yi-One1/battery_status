@@ -365,6 +365,13 @@ run.bat
 .venv\Scripts\python.exe tools\build_exe.py --onedir   :: 目录版，冷启动更快
 ```
 
+---
+
+## 五、许可证
+
+本项目采用 [MIT License](LICENSE)（Copyright © 2026 caihongyi），
+可自由使用、修改和分发，需保留版权与许可声明。
+
 用户配置与日志在 `%APPDATA%\BatteryGlass\`（`preferences.json` / `devices.json` / `app.log`）。
 卸载直接删目录即可，自启动项在设置里关掉或从任务管理器「启动应用」里禁用。
 
