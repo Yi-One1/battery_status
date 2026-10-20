@@ -166,6 +166,8 @@ def test_edifier_config_wires_the_query_protocol():
     assert proto["command"] == "D0 {vid_be} 01 00"
     assert proto["reply_prefix"] == "D0 {vid_be}"
     assert proto["level_offset"] == 6
+    assert proto["charging_byte"] == 7
+    assert proto["charging_bit"] == 0
     assert proto["report_length"] == 64
 
 
@@ -411,6 +413,8 @@ def test_live_mchose_reads_a_sane_percentage():
 # --------------------------------------------------------------------------- #
 EDIFIER_ON = bytes([0xD0, 0x35, 0xBB, 0x0A, 0x00, 0x01, 0x30] + [0] * 57)
 EDIFIER_OFF = bytes([0xD0, 0x35, 0xBB, 0x0A, 0x00, 0x00, 0x00] + [0] * 57)
+# 充电中帧：byte6=0x30=48%，byte7=0x01（充电位 bit0 置 1）
+EDIFIER_CHARGING = bytes([0xD0, 0x35, 0xBB, 0x0A, 0x00, 0x01, 0x30, 0x01] + [0] * 56)
 
 
 def _edifier_cfg(presence: bool = True) -> DeviceConfig:
@@ -422,6 +426,8 @@ def _edifier_cfg(presence: bool = True) -> DeviceConfig:
         "reply_code_offset": 3,
         "reply_code": 10,
         "level_offset": 6,
+        "charging_byte": 7,
+        "charging_bit": 0,
         "timeout_ms": 200,
         "retries": 0,
     }
@@ -468,6 +474,23 @@ def test_edifier_on_reply_reads_48_percent(monkeypatch):
     assert reading.level == 48
 
 
+def test_edifier_charging_reply_sets_charging_flag(monkeypatch):
+    """Bug 修复核心：充电中帧 byte7=0x01 → charging 必须 True（界面显示「充电中」）。"""
+    _patch_query(monkeypatch, [EDIFIER_CHARGING], length=64)
+    reading = read_vendor_query(_edifier_cfg(), _edifier_info())
+    assert reading.ok is True
+    assert reading.level == 48
+    assert reading.charging is True
+
+
+def test_edifier_noncharging_reply_charging_is_false(monkeypatch):
+    """未充电帧 byte7=0x00 → charging 必须 False（配位前它是 None，界面永不显示充电）。"""
+    _patch_query(monkeypatch, [EDIFIER_ON], length=64)
+    reading = read_vendor_query(_edifier_cfg(), _edifier_info())
+    assert reading.ok is True
+    assert reading.charging is False
+
+
 def test_zero_level_with_the_presence_byte_still_reads_zero(monkeypatch):
     """电量真的是 0、但状态字节说"在用"：照样报 0%，不许吞掉。"""
     frame = bytearray(EDIFIER_OFF)
@@ -480,7 +503,7 @@ def test_zero_level_with_the_presence_byte_still_reads_zero(monkeypatch):
 
 
 def test_nonzero_level_ignores_the_presence_byte(monkeypatch):
-    """电量非 0 时不信那个字节 —— 它到底是"已连接"还是"充电中"还没验证过。"""
+    """电量非 0 时不信 byte5（presence/在用位）：它只判"在线"，充电位在 byte7 已单独解析。"""
     frame = bytearray(EDIFIER_ON)
     frame[5] = 0x00
     _patch_query(monkeypatch, [bytes(frame)], length=64)

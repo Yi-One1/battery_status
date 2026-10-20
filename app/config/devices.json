@@ -186,6 +186,8 @@
         "reply_code_offset": 3,
         "reply_code": 10,
         "level_offset": 6,
+        "charging_byte": 7,
+        "charging_bit": 0,
         "presence": {
           "offset": 5,
           "value": 1
@@ -197,7 +199,7 @@
       "options": {
         "demo_level": 92
       },
-      "notes": "实测（2026-10-20，Frida 追踪 HECATE.exe）：0xFF02 接口 64 字节通道，写 D0 35 BB 01 00 → 收 D0 35 BB 0A 00 01 30 00，第 6 字节 0x30=48%，与驱动标题栏 48% 完全一致。共 3 个相同接口，只有第一个响应。机型关机后 dongle 仍在，照样回帧，只是变成 D0 35 BB 0A 00 00 00 —— byte5 从 0x01 变 0x00、电量变 0。所以加 presence：电量 0 且 byte5≠1 时判为「设备已关闭」→ 界面显示未连接，而不是「电量偏低 0%」。电量非 0 时不信这个字节（它到底是「已连接」还是「充电中」还没验证），保守处理。"
+      "notes": "实测（2026-10-20，Frida 追踪 HECATE.exe）：0xFF02 接口 64 字节通道，写 D0 35 BB 01 00 → 收 D0 35 BB 0A 00 01 30 00，第 6 字节 0x30=48%，与驱动标题栏 48% 完全一致。共 3 个相同接口，只有第一个响应。机型关机后 dongle 仍在，照样回帧，只是变成 D0 35 BB 0A 00 00 00 —— byte5 从 0x01 变 0x00、电量变 0。所以加 presence：电量 0 且 byte5≠1 时判为「设备已关闭」→ 界面显示未连接，而不是「电量偏低 0%」。电量非 0 时不信 byte5（presence/在用位）。充电位另测：2026-10-21 用 edifier_charging_probe 对比「充电中」(byte7=0x01) 与「未充电」(byte7=0x00) 两组报文，锁定充电标志 = byte7 的 bit0（充电时置 1，无需取反），已补 charging_byte=7 / charging_bit=0，去掉「未验证」遗留。"
     }
   ]
 }
