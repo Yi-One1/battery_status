@@ -50,33 +50,35 @@ def _draw_icon(painter: QPainter, size: int, level: Optional[int], color: str, c
     nub = QRectF(body.right() + 0.4 * scale, body.top() + 2.4 * scale, 1.5 * scale, 4.0 * scale)
     radius = 2.4 * scale
 
-    if show_percent and level is not None:
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(base)
-        painter.drawRoundedRect(QRectF(0.6 * scale, 0.6 * scale, 14.8 * scale, 14.8 * scale), 4.2 * scale, 4.2 * scale)
-        painter.setPen(QColor(255, 255, 255))
-        # 数字 + % 共用同一基线，字号调小以在 16px 下图标内放下
-        from PySide6.QtGui import QFontMetricsF
-
-        num_text = str(min(100, int(level)))
-        font_num = theme.font(7.8 * scale, 700)
-        font_pct = theme.font(4.6 * scale, 700)
-        fm_num = QFontMetricsF(font_num)
-        fm_pct = QFontMetricsF(font_pct)
-        num_width = fm_num.horizontalAdvance(num_text)
-        pct_width = fm_pct.horizontalAdvance("%") + 0.6 * scale
-        total = num_width + pct_width
-        center_x = 8.0 * scale
-        base_y = 10.0 * scale
-        left = center_x - total / 2
-        painter.setFont(font_num)
-        painter.drawText(QPointF(left, base_y), num_text)
-        painter.setFont(font_pct)
-        painter.drawText(QPointF(left + num_width + 0.3 * scale, base_y), "%")
-        if charging:
-            painter.setPen(QPen(QColor(255, 255, 255, 220), 1.1 * scale))
-            painter.drawLine(QPointF(2.2 * scale, 13.0 * scale), QPointF(13.8 * scale, 13.0 * scale))
-        return
+    if show_percent:
+        if level is None and charging:
+            # 充电占位符（电量不可读）：整块绿色 + 白色闪电，与主界面"充电中"一致
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(theme.OK))
+            painter.drawRoundedRect(QRectF(0.6 * scale, 0.6 * scale, 14.8 * scale, 14.8 * scale), 4.2 * scale, 4.2 * scale)
+            painter.setBrush(QColor(255, 255, 255))
+            painter.drawPath(_bolt(QPointF(8.0 * scale, 8.2 * scale), 8.6 * scale))
+            return
+        if level is not None:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(base)
+            painter.drawRoundedRect(QRectF(0.6 * scale, 0.6 * scale, 14.8 * scale, 14.8 * scale), 4.2 * scale, 4.2 * scale)
+            painter.setPen(QColor(255, 255, 255))
+            # 只画数值，不带 % 符号；充电时数值上移，底部让位给绿色闪电
+            text_rect = QRectF(
+                0.6 * scale,
+                (0.2 if charging else 0.4) * scale,
+                14.8 * scale,
+                (11.2 if charging else 14.6) * scale,
+            )
+            painter.setFont(theme.font(9.4 * scale, 700))
+            painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignCenter), str(min(100, int(level))))
+            if charging:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(theme.OK))
+                painter.drawPath(_bolt(QPointF(8.0 * scale, 13.0 * scale), 4.8 * scale))
+            return
+        # 电量未知且未充电：回落到电池外壳画法
 
     # 电池外壳
     painter.setPen(Qt.PenStyle.NoPen)

@@ -13,10 +13,8 @@ def _ensure_qapp():
         QApplication(["test"])
 
 
-def test_battery_icon_with_percent_draws_percent_sign(monkeypatch):
-    """图标内显示百分比时，绘制的文本必须包含 % 符号。"""
-    from app.ui.tray import _draw_icon
-
+def _capture_texts(monkeypatch) -> list[str]:
+    """劫持 QPainter.drawText，返回绘制的所有文本。"""
     captured: list[str] = []
     original_drawText = QPainter.drawText
 
@@ -29,15 +27,50 @@ def test_battery_icon_with_percent_draws_percent_sign(monkeypatch):
         return original_drawText(painter, *args)
 
     monkeypatch.setattr(QPainter, "drawText", fake_drawText)
+    return captured
 
+
+def _paint_icon(kind_args: tuple) -> None:
+    from app.ui.tray import _draw_icon
+
+    level, color, charging, show_percent, offline = kind_args
     pixmap = QPixmap(32, 32)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
-    _draw_icon(painter, 32, 83, "#0A84FF", False, True, False)
+    _draw_icon(painter, 32, level, color, charging, show_percent, offline)
     painter.end()
 
-    assert any("%" in text for text in captured), f"绘制的文本不含 %：{captured}"
+
+def test_battery_icon_percent_mode_draws_number_without_percent_sign(monkeypatch):
+    """托盘百分比模式只画数值，不画 % 符号。"""
+    from app.ui.tray import _draw_icon
+
+    captured = _capture_texts(monkeypatch)
+    _paint_icon((83, "#0A84FF", False, True, False))
+
     assert any("83" in text for text in captured), f"绘制的文本不含电量数字：{captured}"
+    assert not any("%" in text for text in captured), f"托盘图标不应绘制 % 符号：{captured}"
+
+
+def test_battery_icon_charging_placeholder_draws_bolt_without_number(monkeypatch):
+    """充电占位符（电量不可读）只画闪电，不画数字。"""
+    from app.ui.tray import _draw_icon
+
+    captured = _capture_texts(monkeypatch)
+    _paint_icon((None, "#0A84FF", True, True, False))
+
+    assert not captured, f"充电占位符不应绘制数字文本：{captured}"
+
+
+def test_battery_icon_charging_with_level_draws_number(monkeypatch):
+    """充电且电量可读：照常绘制数值（另加闪电路径，不经过 drawText）。"""
+    from app.ui.tray import _draw_icon
+
+    captured = _capture_texts(monkeypatch)
+    _paint_icon((96, "#0A84FF", True, True, False))
+
+    assert any("96" in text for text in captured), f"绘制的文本不含电量数字：{captured}"
+    assert not any("%" in text for text in captured), f"托盘图标不应绘制 % 符号：{captured}"
 
 
 def test_device_line_uses_display_level():
