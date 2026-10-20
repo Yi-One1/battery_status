@@ -463,7 +463,8 @@ class IconButton(QAbstractButton):
         r = rect.width() / 2
         s = r * 0.42
         if self.kind == "refresh":
-            paint_refresh_icon(painter, c, r * 0.63, QColor(pen.color()))
+            # 刷新图标与设置、关闭保持一致，比之前 0.63R 略小一圈
+            paint_refresh_icon(painter, c, r * 0.58, QColor(pen.color()))
         elif self.kind in ("gear", "sliders"):
             # 三根滑杆，比齿轮更清爽，也更像系统设置图标
             for slot, knob in ((-0.62, 0.42), (0.0, -0.4), (0.62, 0.18)):
