@@ -63,6 +63,23 @@ def filter_visible(
     return [d for d in devices if d.enabled and is_present(snapshots.get(d.id), now=now, hide_minutes=minutes)]
 
 
+def ordered_devices(devices: Iterable[DeviceConfig], prefs: Preferences) -> list[DeviceConfig]:
+    """按用户自定义顺序（prefs.device_order）排列设备。
+
+    排在 device_order 里的在前，顺序即列表顺序；
+    没列出的设备跟在后面，保持原有（内置）相对顺序 —— 面板与托盘必须共用
+    这一个函数，两边的排列才会一致。
+    """
+    items = list(devices)
+    order = [str(x) for x in (prefs.device_order or [])]
+    if not order:
+        return items
+    rank = {device_id: index for index, device_id in enumerate(order)}
+    fallback = len(rank)
+    ranked = sorted(enumerate(items), key=lambda pair: (rank.get(pair[1].id, fallback), pair[0]))
+    return [device for _, device in ranked]
+
+
 def hidden_devices(
     devices: Iterable[DeviceConfig],
     snapshots: dict[str, Snapshot],

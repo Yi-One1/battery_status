@@ -26,6 +26,7 @@ from ..core.config import (
     DeviceRegistry,
     SettingsStore,
 )
+from ..core.presence import ordered_devices
 from . import theme
 from .add_device import AddDeviceDialog
 from .confirm import ConfirmDialog
@@ -334,7 +335,7 @@ class SettingsPane(QWidget):
         self._device_segments.clear()
         self._device_hints.clear()
 
-        devices = self.registry.enabled_devices()
+        devices = ordered_devices(self.registry.enabled_devices(), self.store.prefs)
         if not devices:
             self._device_layout.addWidget(
                 _label("清单为空。点右下角「添加设备…」挑一台。", 11.0, 400, theme.TEXT_TERTIARY)
@@ -371,6 +372,16 @@ class SettingsPane(QWidget):
         dot.clicked.connect(lambda _=False, c=cfg, s=dot: self._pick_device_color(c, s))
         self._device_swatches[cfg.id] = dot
         top.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # 上下移：调整主界面/托盘的卡片顺序
+        up = PillButton("↑", tone="neutral", height=20)
+        up.setToolTip(f"把「{cfg.display_name}」往前移一格")
+        up.clicked.connect(lambda _=False, did=cfg.id: self._on_move_device(did, -1))
+        top.addWidget(up, 0, Qt.AlignmentFlag.AlignVCenter)
+        down = PillButton("↓", tone="neutral", height=20)
+        down.setToolTip(f"把「{cfg.display_name}」往后移一格")
+        down.clicked.connect(lambda _=False, did=cfg.id: self._on_move_device(did, +1))
+        top.addWidget(down, 0, Qt.AlignmentFlag.AlignVCenter)
 
         remove = PillButton("移除", tone="neutral")
         remove.setToolTip(f"从清单里删除「{cfg.display_name}」")
@@ -417,6 +428,23 @@ class SettingsPane(QWidget):
             return
         self._refresh_device_hint(device_id)
         self._commit()
+
+    def _on_move_device(self, device_id: str, delta: int) -> None:
+        """上移/下移一台设备，写入 device_order 并让主界面与托盘跟着重排。"""
+        devices = ordered_devices(self.registry.enabled_devices(), self.store.prefs)
+        ids = [d.id for d in devices]
+        try:
+            index = ids.index(device_id)
+        except ValueError:
+            return
+        target = index + int(delta)
+        if not 0 <= target < len(ids) or target == index:
+            return
+        ids[index], ids[target] = ids[target], ids[index]
+        self.store.prefs.device_order = ids
+        self._commit()
+        self._rebuild_device_rows()
+        self.devices_changed.emit()
 
     def _on_device_rename(self, device_id: str, new_name: str) -> None:
         if not self.registry.rename_device(device_id, new_name):

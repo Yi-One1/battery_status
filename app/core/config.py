@@ -454,6 +454,8 @@ class Preferences:
     demo: bool = False
     # 设备自动管理（问题3）
     auto_add: bool = True
+    # 主界面设备顺序：按 id 列出优先顺序；未列出的排在后面，保持内置顺序
+    device_order: list[str] = field(default_factory=list)
     # 玻璃效果：live_glass（柔光玻璃）/ white（纯白色）
     background_mode: str = BACKGROUND_LIVE_GLASS
     auto_hide_offline: bool = True
@@ -475,6 +477,8 @@ class Preferences:
             default = getattr(prefs, key)
             if isinstance(default, dict) and isinstance(value, dict):
                 setattr(prefs, key, dict(value))
+            elif isinstance(default, list) and isinstance(value, list):
+                setattr(prefs, key, [str(item) for item in value])
             elif isinstance(default, bool):
                 setattr(prefs, key, bool(value))
             elif isinstance(default, int):

@@ -24,7 +24,7 @@ from ..core.discovery import build_device_config
 from ..core.model import Snapshot
 from ..core.monitor import Monitor
 from ..core.paths import resource_root
-from ..core.presence import filter_visible, hidden_devices
+from ..core.presence import filter_visible, hidden_devices, ordered_devices
 from . import theme
 from .backdrop import capture_screen
 from .cards import DeviceCard
@@ -239,8 +239,9 @@ class Panel(QWidget):
         return (CONTENT_WIDTH - 2 * PAGE_PADDING - CARD_GAP) // 2
 
     def visible_devices(self) -> list:
-        """当前该占位的设备：已启用，且没有因断连过久被自动收起。"""
-        return filter_visible(self.registry.enabled_devices(), self._snapshots, self.store.prefs)
+        """当前该占位的设备：已启用、未因断连收起，并按用户自定义顺序排列。"""
+        visible = filter_visible(self.registry.enabled_devices(), self._snapshots, self.store.prefs)
+        return ordered_devices(visible, self.store.prefs)
 
     def _rebuild_cards(self) -> None:
         for card in self._cards.values():
