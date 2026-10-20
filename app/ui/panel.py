@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.config import BACKGROUND_GAUSSIAN_BLUR, BACKGROUND_LIVE_GLASS, BACKGROUND_WHITE, DeviceRegistry, SettingsStore
+from ..core.config import BACKGROUND_LIVE_GLASS, BACKGROUND_WHITE, DeviceRegistry, SettingsStore
 from ..core.discovery import build_device_config
 from ..core.model import Snapshot
 from ..core.monitor import Monitor
@@ -342,7 +342,6 @@ class Panel(QWidget):
         """根据背景模式取桌面底图或回落静态背景。
 
         live_glass: 取整屏并做柔光玻璃自适应；拖动时颜色跟着走。
-        gaussian_blur: 取整屏并加重模糊，背景更柔和。
         white: 不截屏，直接使用纯白色背景（最省电、最稳定）。
         """
         mode = self.store.prefs.background_mode
@@ -357,7 +356,7 @@ class Panel(QWidget):
             return
 
         exclude = self.frameGeometry().adjusted(-6, -6, 6, 6) if self.isVisible() else None
-        backdrop = capture_screen(exclude=exclude, strong_blur=(mode == BACKGROUND_GAUSSIAN_BLUR))
+        backdrop = capture_screen(exclude=exclude)
         if backdrop is None or not backdrop.is_valid():
             if not self._has_backdrop:
                 clear_backdrop()
@@ -426,8 +425,8 @@ class Panel(QWidget):
         self._shown_at = time.monotonic()
         self._apply_window_blur()
         mode = self.store.prefs.background_mode
-        # 白色模式不截屏、不刷新；柔光/高斯模式定时重取
-        if mode in (BACKGROUND_LIVE_GLASS, BACKGROUND_GAUSSIAN_BLUR):
+        # 白色模式不截屏、不刷新；柔光玻璃模式定时重取
+        if mode == BACKGROUND_LIVE_GLASS:
             self._backdrop_timer.start()
         elif mode == BACKGROUND_WHITE:
             self._backdrop_timer.stop()
@@ -504,7 +503,7 @@ class Panel(QWidget):
         mode = self.store.prefs.background_mode
         if mode == BACKGROUND_WHITE:
             self._backdrop_timer.stop()
-        elif mode in (BACKGROUND_LIVE_GLASS, BACKGROUND_GAUSSIAN_BLUR):
+        elif mode == BACKGROUND_LIVE_GLASS:
             self._backdrop_timer.start()
         self._refresh_backdrop()
         self._apply_window_blur()

@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
 
 from ..core import autostart
 from ..core.config import (
-    BACKGROUND_GAUSSIAN_BLUR,
     BACKGROUND_LIVE_GLASS,
     BACKGROUND_WHITE,
     DeviceConfig,
@@ -152,16 +151,15 @@ class SettingsPane(QWidget):
             [
                 (BACKGROUND_LIVE_GLASS, "柔光玻璃"),
                 (BACKGROUND_WHITE, "纯白色"),
-                (BACKGROUND_GAUSSIAN_BLUR, "高斯模糊"),
             ],
             height=24,
         )
         self.background_mode.set_value(store.prefs.background_mode)
-        self.background_mode.setFixedWidth(202)
+        self.background_mode.setFixedWidth(150)
         self.background_mode.changed.connect(self._on_background_mode)
         column.addWidget(SettingRow(
             "窗口背景",
-            "柔光玻璃跟随桌面；纯白色最省电；高斯模糊取桌面并加重模糊",
+            "柔光玻璃跟随桌面；纯白色最省电",
             self.background_mode,
         ))
 

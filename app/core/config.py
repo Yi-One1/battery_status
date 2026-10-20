@@ -39,8 +39,7 @@ DEFAULT_OFFLINE_HIDE_MINUTES = 10
 # 背景模式
 BACKGROUND_LIVE_GLASS = "live_glass"
 BACKGROUND_WHITE = "white"
-BACKGROUND_GAUSSIAN_BLUR = "gaussian_blur"
-BACKGROUND_MODES = (BACKGROUND_LIVE_GLASS, BACKGROUND_WHITE, BACKGROUND_GAUSSIAN_BLUR)
+BACKGROUND_MODES = (BACKGROUND_LIVE_GLASS, BACKGROUND_WHITE)
 
 
 # --------------------------------------------------------------------------- #
@@ -455,7 +454,7 @@ class Preferences:
     demo: bool = False
     # 设备自动管理（问题3）
     auto_add: bool = True
-    # 玻璃效果：live_glass（柔光玻璃）/ white（纯白色）/ gaussian_blur（高斯模糊）
+    # 玻璃效果：live_glass（柔光玻璃）/ white（纯白色）
     background_mode: str = BACKGROUND_LIVE_GLASS
     auto_hide_offline: bool = True
     offline_hide_minutes: int = DEFAULT_OFFLINE_HIDE_MINUTES

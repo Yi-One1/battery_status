@@ -2,8 +2,9 @@
 
 验证：
   1. Preferences 能正确读写并迁移 background_mode；
-  2. 柔光玻璃模式下拖动会启动重绘定时器，白色/高斯模糊模式不启动；
-  3. 白色模式不截屏，柔光玻璃已取到背景后不再重复截屏。
+  2. 柔光玻璃模式下拖动会启动重绘定时器，白色模式不启动；
+  3. 白色模式不截屏，柔光玻璃已取到背景后不再重复截屏；
+  4. 已废弃的 gaussian_blur 值自动回落为柔光玻璃。
 """
 from __future__ import annotations
 
@@ -11,12 +12,7 @@ import pytest
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QMouseEvent
 
-from app.core.config import (
-    BACKGROUND_GAUSSIAN_BLUR,
-    BACKGROUND_LIVE_GLASS,
-    BACKGROUND_WHITE,
-    Preferences,
-)
+from app.core.config import BACKGROUND_LIVE_GLASS, BACKGROUND_WHITE, Preferences
 
 
 pytestmark = pytest.mark.usefixtures("qapp")
@@ -38,16 +34,25 @@ def test_preferences_live_glass_migrates_to_background_mode(tmp_path):
     assert prefs2.background_mode == BACKGROUND_LIVE_GLASS
 
 
+def test_deprecated_gaussian_blur_falls_back_to_live_glass(tmp_path):
+    """已删除的高斯模糊模式在旧配置里回落为柔光玻璃。"""
+    from app.core.config import DeviceRegistry
+
+    registry = DeviceRegistry(user_dir=tmp_path)
+    prefs = Preferences.from_dict({"background_mode": "gaussian_blur"}, registry)
+    assert prefs.background_mode == BACKGROUND_LIVE_GLASS
+
+
 def test_preferences_background_mode_roundtrip(tmp_path):
     from app.core.config import DeviceRegistry, SettingsStore
 
     registry = DeviceRegistry(user_dir=tmp_path)
     store = SettingsStore(registry, path=tmp_path / "preferences.json")
-    store.prefs.background_mode = BACKGROUND_GAUSSIAN_BLUR
+    store.prefs.background_mode = BACKGROUND_WHITE
     store.save()
 
     again = SettingsStore(registry, path=tmp_path / "preferences.json")
-    assert again.prefs.background_mode == BACKGROUND_GAUSSIAN_BLUR
+    assert again.prefs.background_mode == BACKGROUND_WHITE
 
 
 def test_panel_drag_starts_update_timer_in_live_glass(monkeypatch, tmp_path):
