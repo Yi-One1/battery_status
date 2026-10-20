@@ -202,7 +202,9 @@ class TrayController(QObject):
                 return
             color = prefs.color_for_device(cfg)
             self._icons[0].setIcon(
-                battery_icon(snap.level, color, bool(snap.charging), show_percent, not snap.online)
+                battery_icon(
+                    snap.display_level, color, bool(snap.display_charging), show_percent, not snap.online
+                )
             )
             self._icons[0].setToolTip(self._tooltip())
             return
@@ -213,13 +215,15 @@ class TrayController(QObject):
             snap = snapshots[cfg.id]
             color = prefs.color_for_device(cfg)
             self._icons[index].setIcon(
-                battery_icon(snap.level, color, bool(snap.charging), show_percent, not snap.online)
+                battery_icon(
+                    snap.display_level, color, bool(snap.display_charging), show_percent, not snap.online
+                )
             )
             self._icons[index].setToolTip(self._device_line(cfg.display_name, snap))
             lines.append(self._device_line(cfg.display_name, snap))
 
     def _device_line(self, name: str, snap: Snapshot) -> str:
-        level = "--" if snap.level is None else f"{snap.level}%"
+        level = "--" if snap.display_level is None else f"{snap.display_level}%"
         return f"{name}  {level}  {snap.status_text(self.store.prefs.low_battery_threshold)}"
 
     def _tooltip(self) -> str:
@@ -254,7 +258,13 @@ class TrayController(QObject):
                 continue
             action = QAction(self._device_line(cfg.display_name, snap), self._menu)
             action.setIcon(
-                battery_icon(snap.level, prefs.color_for_device(cfg), bool(snap.charging), True, not snap.online)
+                battery_icon(
+                    snap.display_level,
+                    prefs.color_for_device(cfg),
+                    bool(snap.display_charging),
+                    True,
+                    not snap.online,
+                )
             )
             action.triggered.connect(self.show_panel.emit)
             self._menu.addAction(action)
