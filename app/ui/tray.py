@@ -55,13 +55,24 @@ def _draw_icon(painter: QPainter, size: int, level: Optional[int], color: str, c
         painter.setBrush(base)
         painter.drawRoundedRect(QRectF(0.6 * scale, 0.6 * scale, 14.8 * scale, 14.8 * scale), 4.2 * scale, 4.2 * scale)
         painter.setPen(QColor(255, 255, 255))
-        font = theme.font(9.4 * scale, 700)
-        painter.setFont(font)
-        painter.drawText(
-            QRectF(0.6 * scale, 0.4 * scale, 14.8 * scale, 15.0 * scale),
-            int(Qt.AlignmentFlag.AlignCenter),
-            str(min(100, int(level))),
-        )
+        # 数字 + % 共用同一基线，字号调小以在 16px 下图标内放下
+        from PySide6.QtGui import QFontMetricsF
+
+        num_text = str(min(100, int(level)))
+        font_num = theme.font(7.8 * scale, 700)
+        font_pct = theme.font(4.6 * scale, 700)
+        fm_num = QFontMetricsF(font_num)
+        fm_pct = QFontMetricsF(font_pct)
+        num_width = fm_num.horizontalAdvance(num_text)
+        pct_width = fm_pct.horizontalAdvance("%") + 0.6 * scale
+        total = num_width + pct_width
+        center_x = 8.0 * scale
+        base_y = 10.0 * scale
+        left = center_x - total / 2
+        painter.setFont(font_num)
+        painter.drawText(QPointF(left, base_y), num_text)
+        painter.setFont(font_pct)
+        painter.drawText(QPointF(left + num_width + 0.3 * scale, base_y), "%")
         if charging:
             painter.setPen(QPen(QColor(255, 255, 255, 220), 1.1 * scale))
             painter.drawLine(QPointF(2.2 * scale, 13.0 * scale), QPointF(13.8 * scale, 13.0 * scale))
@@ -154,8 +165,23 @@ class TrayController(QObject):
             self._icons.append(tray)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
-            self.toggle_requested.emit()
+        prefs = self.store.prefs
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            action = prefs.tray_click_action
+            if action == "show":
+                self.show_panel.emit()
+            elif action == "settings":
+                self.show_settings.emit()
+            else:
+                self.toggle_requested.emit()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            action = prefs.tray_double_click_action
+            if action == "show":
+                self.show_panel.emit()
+            elif action == "settings":
+                self.show_settings.emit()
+            else:
+                self.toggle_requested.emit()
 
     def update_snapshots(self, snapshots: dict[str, Snapshot]) -> None:
         self._snapshots = snapshots

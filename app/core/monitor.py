@@ -175,13 +175,15 @@ class Monitor(QThread):
             if level is not None and (not history or history[-1] != level):
                 history.append(level)
         elif reading.detected:
-            # 设备在，但协议读不到电量：保持在线，只是没有数值
+            # 设备在，但协议读不到电量：保持在线，只是没有数值。
+            # 如果协议明确给出了充电位（如迈从有线通道的 presence_report），
+            # 把充电状态也带到快照里，让 UI 可以显示"充电中"和绿色闪电。
             self._misses[cfg.id] = 0
             history.clear()
             return Snapshot(
                 device_id=cfg.id,
                 level=None,
-                charging=None,
+                charging=reading.charging,
                 online=True,
                 source="none",
                 detail=reading.detail,

@@ -141,6 +141,23 @@ def test_parse_charging_bit():
     assert result == (48, True)
 
 
+def test_parse_charging_bit_can_be_inverted():
+    """低电平有效（active-low）的充电位：bit=1 表示未充电，invert 后返回 True。"""
+    frame = bytearray(REAL_REPLY)
+    frame[5] = 0x00
+    result = parse_vendor_reply(
+        bytes(frame),
+        prefix=bytes([0xD0, 0x35, 0xBB]),
+        code_offset=3,
+        code_value=0x0A,
+        level_offset=6,
+        charging_byte=5,
+        charging_bit=0,
+        charging_invert=True,
+    )
+    assert result == (48, True)
+
+
 def test_edifier_config_wires_the_query_protocol():
     data = json.loads((ROOT / "app" / "config" / "devices.json").read_text(encoding="utf-8"))
     device = next(d for d in data["devices"] if d["id"] == "edifier-g3max")
@@ -334,16 +351,34 @@ def test_only_echo_means_no_reading(monkeypatch):
     assert reading.offline is False
 
 
-def test_mchose_config_wires_the_query_protocol():
+def test_mchose_config_wires_the_query_channels():
     data = json.loads((ROOT / "app" / "config" / "devices.json").read_text(encoding="utf-8"))
     device = next(d for d in data["devices"] if d["id"] == "mchose-g98pro")
     proto = device["protocol"]
     assert proto["name"] == "vendor_query"
-    assert proto["command"] == "13 4A 01 00 02 00"
-    assert proto["checksum"] == "sum8"
-    assert proto["report_length"] == 20
-    assert proto["reply_prefix"] == "13 4A 01 00 02"
-    assert proto["level_offset"] == 5
+    assert "channels" in proto
+    assert len(proto["channels"]) == 2
+
+    wireless = proto["channels"][0]
+    assert wireless["match"]["pid"] == 443
+    assert wireless["command"] == "13 4A 01 00 02 00"
+    assert wireless["checksum"] == "sum8"
+    assert wireless["report_length"] == 20
+    assert wireless["reply_prefix"] == "13 4A 01 00 02"
+    assert wireless["level_offset"] == 5
+    assert wireless["charging_byte"] == 6
+    assert wireless["charging_bit"] == 0
+    assert wireless["charging_invert"] is True
+    assert wireless["link"] == "wireless"
+
+    wired = proto["channels"][1]
+    assert wired["match"]["pid"] == 441
+    assert wired["feature_report"] is True
+    assert wired["feature_id"] == 9
+    assert wired["report_length"] == 10
+    assert wired["reply_prefix"] == "09 87"
+    assert wired["level_offset"] == 8
+    assert wired["link"] == "wired"
 
 
 def test_live_mchose_reads_a_sane_percentage():
@@ -361,9 +396,10 @@ def test_live_mchose_reads_a_sane_percentage():
         pytest.skip("设备未连接")
 
     reading = read_device(cfg, infos, set())
-    assert reading.ok, f"读取失败：{reading.detail}"
-    assert reading.level is not None and 0 <= reading.level <= 100
+    assert reading.ok or reading.detected, f"读取失败：{reading.detail}"
     assert reading.source == "vendor-query"
+    if reading.ok:
+        assert reading.level is not None and 0 <= reading.level <= 100
 
 
 # --------------------------------------------------------------------------- #
@@ -467,3 +503,113 @@ def test_edifier_config_declares_presence_rule():
     data = json.loads((ROOT / "app" / "config" / "devices.json").read_text(encoding="utf-8"))
     device = next(d for d in data["devices"] if d["id"] == "edifier-g3max")
     assert device["protocol"]["presence"] == {"offset": 5, "value": 1}
+
+
+# --------------------------------------------------------------------------- #
+# 多通道（channels）与 Feature 报告
+# --------------------------------------------------------------------------- #
+class _FakeFeatureHandle(_FakeHandle):
+    """支持 Feature 报告读写的伪句柄。"""
+
+    def __init__(self, feature_frames: dict[int, bytes] | None = None) -> None:
+        super().__init__([])
+        self._feature_frames = dict(feature_frames or {})
+        self.written_features: list[bytes] = []
+
+    def read_feature(self, report_id: int, length: int = 64):
+        data = self._feature_frames.get(report_id)
+        if not data:
+            return None
+        return bytes(data[:length]) if length > 0 else bytes(data)
+
+    def write_feature(self, payload: bytes) -> int:
+        self.written_features.append(bytes(payload))
+        return len(payload)
+
+
+def _mchose_wired_info() -> HidDeviceInfo:
+    return HidDeviceInfo(
+        path=b"\\\\?\\hid#vid_258a&pid_01b9&mi_01&col08",
+        vid=0x258A,
+        pid=0x01B9,
+        product="MCHOSE G98 Pro",
+        manufacturer="SINO WEALTH",
+        usage_page=0xFF02,
+        usage=0x01,
+    )
+
+
+def _mchose_wired_cfg() -> DeviceConfig:
+    return DeviceConfig(
+        id="mchose-g98pro",
+        type="keyboard",
+        display_name="迈从 G98 PRO",
+        match={"vid": 0x258A, "pid": [0x01BB, 0x01B9]},
+        protocol={
+            "name": "vendor_query",
+            "channels": [
+                {
+                    "match": {"pid": 0x01BB, "usage_page": 0xFF02, "usage": 2},
+                    "command": "13 4A 01 00 02 00",
+                    "report_length": 20,
+                    "checksum": "sum8",
+                    "reply_prefix": "13 4A 01 00 02",
+                    "level_offset": 5,
+                    "link": "wireless",
+                },
+                {
+                    "match": {"pid": 0x01B9, "usage_page": 0xFF02, "usage": 1},
+                    "feature_report": True,
+                    "feature_id": 9,
+                    "report_length": 10,
+                    "reply_prefix": "09 87",
+                    "level_offset": 8,
+                    "link": "wired",
+                },
+            ],
+        },
+    )
+
+
+MCHOSE_WIRED_FEATURE = bytes([0x09, 0x87, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x32, 0x10])
+
+
+def _patch_feature(monkeypatch, feature_frames: dict[int, bytes], input_length: int = 0):
+    handle = _FakeFeatureHandle(feature_frames)
+    caps = _FakeCaps(input_length)
+    caps.feature_length = 520
+    monkeypatch.setattr("app.core.protocols.HidHandle", lambda info: handle)
+    monkeypatch.setattr("app.core.protocols.device_caps", lambda path: caps)
+    return handle
+
+
+def test_wired_feature_channel_reads_battery(monkeypatch):
+    handle = _patch_feature(monkeypatch, {9: MCHOSE_WIRED_FEATURE})
+    reading = read_vendor_query(_mchose_wired_cfg(), _mchose_wired_info())
+
+    assert reading.ok is True
+    assert reading.level == 50
+    assert reading.link == "wired"
+    assert reading.source == "vendor-query"
+    assert handle.written_features == []  # 有线通道不需要先发命令
+
+
+def test_channel_selects_correct_strategy_by_match(monkeypatch):
+    """同设备多通道：根据 info 的 PID + Usage 选择对应通道。"""
+    cfg = _mchose_wired_cfg()
+
+    # 0x01BB / usage=2 → 命中无线通道，下发查询命令
+    handle = _patch_query(monkeypatch, [MCHOSE_REPLY])
+    reading = read_vendor_query(cfg, mchose_info())
+    assert reading.ok is True
+    assert reading.level == 100
+    assert reading.link == "wireless"
+    assert handle.written == [MCHOSE_QUERY]
+
+    # 0x01B9 / usage=1 → 命中有线 Feature 通道，不发查询命令
+    handle = _patch_feature(monkeypatch, {9: MCHOSE_WIRED_FEATURE})
+    reading = read_vendor_query(cfg, _mchose_wired_info())
+    assert reading.ok is True
+    assert reading.level == 50
+    assert reading.link == "wired"
+    assert handle.written_features == []

@@ -23,6 +23,7 @@ from . import theme
 from .add_device import AddDeviceDialog
 from .confirm import ConfirmDialog
 from .glass import ColorSwatch, Divider, PillButton, SegmentedControl, ToggleSwitch
+from .removed_devices import RemovedDevicesDialog
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +102,9 @@ class SettingsPane(QWidget):
         self._device_layout.setContentsMargins(0, 0, 0, 0)
         self._device_layout.setSpacing(1)
         column.addWidget(self._device_holder)
-        column.addWidget(self._build_restore_row())
+        self._removed_button = PillButton("已移除设备", tone="neutral", height=22)
+        self._removed_button.clicked.connect(self._open_removed_dialog)
+        column.addWidget(SettingRow("已移除设备", "查看并恢复或彻底移除已删除的设备", self._removed_button))
         self._rebuild_device_rows()
 
         self.add_button = PillButton("添加设备…", tone="accent", height=26)
@@ -154,6 +157,19 @@ class SettingsPane(QWidget):
         self.tray_percent.setChecked(store.prefs.tray_show_percent)
         self.tray_percent.toggled.connect(self._on_tray_percent)
         column.addWidget(SettingRow("图标内显示百分比", "图标更直观，但小尺寸下数字较挤", self.tray_percent))
+
+        TRAY_ACTIONS = [("toggle", "切换显示"), ("show", "电量界面"), ("settings", "设置页")]
+        self.tray_click = SegmentedControl(TRAY_ACTIONS, height=24)
+        self.tray_click.set_value(store.prefs.tray_click_action)
+        self.tray_click.setFixedWidth(202)
+        self.tray_click.changed.connect(self._on_tray_click)
+        column.addWidget(SettingRow("左键单击", "点击托盘图标后打开哪个界面", self.tray_click))
+
+        self.tray_double_click = SegmentedControl(TRAY_ACTIONS, height=24)
+        self.tray_double_click.set_value(store.prefs.tray_double_click_action)
+        self.tray_double_click.setFixedWidth(202)
+        self.tray_double_click.changed.connect(self._on_tray_double_click)
+        column.addWidget(SettingRow("左键双击", "双击托盘图标后打开哪个界面", self.tray_double_click))
 
         column.addWidget(Divider())
         column.addWidget(self._section("监测与提醒"))
@@ -255,39 +271,23 @@ class SettingsPane(QWidget):
         """当前展示的设备行（测试与调试用）。"""
         return dict(self._device_rows)
 
-    def _build_restore_row(self) -> QWidget:
-        """删除是可逆的：被移除的设备（含内置）都在这里等着撤销。"""
-        box = QWidget()
-        box.setStyleSheet("background: transparent;")
-        layout = QHBoxLayout(box)
-        layout.setContentsMargins(0, 3, 0, 3)
-        layout.setSpacing(8)
-        self._restore_label = _label("", 10.5, 400, theme.TEXT_TERTIARY)
-        layout.addWidget(self._restore_label, 1)
-        self._restore_button = PillButton("恢复", tone="neutral", height=22)
-        self._restore_button.clicked.connect(self.restore_removed)
-        layout.addWidget(self._restore_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._restore_box = box
-        box.setVisible(False)
-        return box
-
-    def _sync_restore_row(self) -> None:
+    def _sync_restore_button(self) -> None:
         removed = self.registry.removed_ids()
-        if not hasattr(self, "_restore_box"):
+        if not hasattr(self, "_removed_button"):
             return
-        if not removed:
-            self._restore_box.setVisible(False)
-            return
-        names = []
-        for device_id in removed[:2]:
-            cfg = next((d for d in self.registry.known_devices() if d.id == device_id), None)
-            names.append(cfg.display_name if cfg else device_id)
-        more = f" 等 {len(removed)} 台" if len(removed) > 2 else ""
-        self._restore_label.setText(f"已移除 {'、'.join(names)}{more}")
-        self._restore_box.setVisible(True)
+        self._removed_button.setText(f"已移除设备 ({len(removed)})" if removed else "已移除设备")
+        self._removed_button.setEnabled(bool(removed))
+
+    def _open_removed_dialog(self) -> None:
+        """打开已移除设备列表弹窗。"""
+        dialog = RemovedDevicesDialog(self.registry, self.window())
+        dialog.exec()
+        self._sync_restore_button()
+        self._rebuild_device_rows()
+        self.devices_changed.emit()
 
     def restore_removed(self) -> int:
-        """撤销全部删除操作，返回恢复的数量。"""
+        """撤销全部删除操作（兼容旧入口），返回恢复的数量。"""
         removed = self.registry.removed_ids()
         if not removed:
             return 0
@@ -295,6 +295,7 @@ class SettingsPane(QWidget):
             self.registry.restore_device(device_id, persist=False)
         self.registry.save_user_config()
         log.info("恢复 %d 台被移除的设备", len(removed))
+        self._sync_restore_button()
         self._rebuild_device_rows()
         self.devices_changed.emit()
         return len(removed)
@@ -321,7 +322,7 @@ class SettingsPane(QWidget):
                 row = self._device_row(cfg)
                 self._device_layout.addWidget(row)
                 self._device_rows[cfg.id] = row
-        self._sync_restore_row()
+        self._sync_restore_button()
 
     def _device_row(self, cfg: DeviceConfig) -> QWidget:
         """一台设备两行：上行名称 + 取色 + 移除，下行来源说明 + 样式选择。"""
@@ -510,6 +511,14 @@ class SettingsPane(QWidget):
 
     def _on_tray_percent(self, checked: bool) -> None:
         self.store.prefs.tray_show_percent = checked
+        self._commit()
+
+    def _on_tray_click(self, value: str) -> None:
+        self.store.prefs.tray_click_action = value
+        self._commit()
+
+    def _on_tray_double_click(self, value: str) -> None:
+        self.store.prefs.tray_double_click_action = value
         self._commit()
 
     def _on_interval(self, value: int) -> None:

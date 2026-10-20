@@ -103,6 +103,19 @@ def test_detected_device_stays_online_without_a_number(monitor):
     assert snapshot.status_text() == "暂无电量"
 
 
+def test_detected_with_charging_keeps_charging_state(monitor):
+    """presence_report 通道把充电位带到快照，UI 能显示绿色闪电。"""
+    snapshot = monitor._merge(
+        _cfg(),
+        Reading(detected=True, charging=True, link="wired", detail="有线在线"),
+    )
+    assert snapshot.online is True
+    assert snapshot.level is None
+    assert snapshot.charging is True
+    assert snapshot.link == "wired"
+    assert snapshot.status_text() == "有线 · 充电中"
+
+
 def test_silent_dongle_goes_offline_after_two_scans(monitor):
     """关机后 dongle 可能干脆不应答：第一轮保留旧值，第二轮才判未连接。"""
     cfg = _cfg()

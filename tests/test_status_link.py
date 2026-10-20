@@ -67,6 +67,24 @@ def test_link_label_only_knows_the_two_real_cases():
     assert snap(link="bluetooth").link_label == ""
 
 
+def test_display_level_hides_50_while_charging():
+    """迈从 G98 PRO 2.4G/有线充电时固件固定返回 50%，应把它当作占位符隐藏。"""
+    # 显式充电位为 True 时隐藏
+    assert snap(level=50, charging=True).display_level is None
+    assert snap(level=50, charging=True).display_charging is True
+    # 未充电时 50% 就是真实电量
+    assert snap(level=50, charging=False).display_level == 50
+    # 非 50 的充电电量照常显示
+    assert snap(level=100, charging=True).display_level == 100
+    # 有线通道读不到充电位、只有电量 50 时，也按充电占位处理
+    wired = snap(level=50, charging=None, link=LINK_WIRED)
+    assert wired.display_charging is True
+    assert wired.display_level is None
+    assert wired.status_text() == "有线 · 充电中"
+    assert snap(level=50, charging=True, link=LINK_WIRELESS).status_text() == "2.4G · 充电中"
+    assert snap(level=50, charging=True).status_text() == "充电中"
+
+
 # --------------------------------------------------------------------------- #
 # 有线 / 无线的探测与兜底
 # --------------------------------------------------------------------------- #
@@ -130,6 +148,26 @@ def test_receiver_device_is_tagged_as_wireless(monkeypatch):
     assert reading.link == LINK_WIRELESS
 
 
+def test_wired_pid_overrides_wireless_index(monkeypatch):
+    """GPW2 等新型号插线后仍用索引 1 出现在 HID++ 通道上，
+    此时应通过 configured wired_pid 识别为有线。"""
+    monkeypatch.setattr(protocols, "device_caps", lambda path: _Caps())
+    monkeypatch.setattr(protocols, "HidHandle", _FakeHandle)
+    monkeypatch.setattr(protocols, "HidppSession", _FakeSession)
+    monkeypatch.setattr(
+        protocols,
+        "hidpp_probe",
+        lambda session, path, force=False: HidppProbe(devices=[HidppDevice(index=1, name="PRO X Wireless")]),
+    )
+
+    cfg = _logitech_cfg()
+    cfg.protocol["wired_pid"] = "0xC094"
+    reading = protocols.read_logitech(cfg, _wired_info())
+    assert reading.ok is True
+    assert reading.level == 62
+    assert reading.link == LINK_WIRED
+
+
 def _info():
     from app.core.hidapi_io import HidDeviceInfo
 
@@ -138,6 +176,20 @@ def _info():
         vid=0x046D,
         pid=0xC547,
         product="USB Receiver",
+        manufacturer="Logitech",
+        usage_page=0xFF00,
+        usage=0x01,
+    )
+
+
+def _wired_info():
+    from app.core.hidapi_io import HidDeviceInfo
+
+    return HidDeviceInfo(
+        path=b"\\\\?\\hid#vid_046d&pid_c094",
+        vid=0x046D,
+        pid=0xC094,
+        product="PRO X Wireless",
         manufacturer="Logitech",
         usage_page=0xFF00,
         usage=0x01,
@@ -195,8 +247,8 @@ def test_all_paths_sleeping_still_reports_sleeping(monkeypatch):
     assert reading.sleeping is True
 
 
-def test_first_working_path_wins_without_extra_probing(monkeypatch):
-    """正常无线情况不能因为"有线优先"多开一轮句柄 —— 低占用是硬指标。"""
+def test_all_candidates_probed_to_prefer_wired(monkeypatch):
+    """为优先有线链路， wireless ok 时也会继续扫描其它候选，上限仍是 4 个。"""
     infos = [_info(), _info(), _info()]
     cfg = _logitech_cfg()
     monkeypatch.setattr(protocols, "candidate_infos", lambda infos, cfg: list(infos))
@@ -209,7 +261,29 @@ def test_first_working_path_wins_without_extra_probing(monkeypatch):
 
     monkeypatch.setattr(protocols, "read_logitech", fake_read)
     read_device(cfg, infos, set())
-    assert len(calls) == 1
+    assert len(calls) == 3
+
+
+def test_wired_path_is_preferred_over_wireless(monkeypatch):
+    """插着线时同时存在无线接收器和有线接口，必须优先返回有线链路。"""
+    infos = [_info(), _info(), _info()]
+    cfg = _logitech_cfg()
+    monkeypatch.setattr(protocols, "candidate_infos", lambda infos, cfg: list(infos))
+
+    calls: list[int] = []
+
+    def fake_read(cfg, info):
+        calls.append(id(info))
+        if len(calls) == 1:
+            return Reading(level=62, source="hidpp", ok=True, link=LINK_WIRELESS)
+        return Reading(level=71, source="hidpp", ok=True, link=LINK_WIRED)
+
+    monkeypatch.setattr(protocols, "read_logitech", fake_read)
+    reading = read_device(cfg, infos, set())
+
+    assert reading.ok is True
+    assert reading.link == LINK_WIRED
+    assert reading.level == 71
 
 
 # --------------------------------------------------------------------------- #
@@ -249,9 +323,13 @@ def test_dongle_configs_declare_wireless():
 
     root = Path(__file__).resolve().parent.parent
     data = json.loads((root / "app" / "config" / "devices.json").read_text(encoding="utf-8"))
-    for device_id in ("mchose-g98pro", "edifier-g3max"):
-        device = next(d for d in data["devices"] if d["id"] == device_id)
-        assert device["protocol"]["link"] == "wireless"
+    # 漫步者：单一无线通道，link 在 protocol 顶层
+    edifier = next(d for d in data["devices"] if d["id"] == "edifier-g3max")
+    assert edifier["protocol"]["link"] == "wireless"
+    # 迈从：无线/有线两种形态，link 声明在对应通道里
+    mchose = next(d for d in data["devices"] if d["id"] == "mchose-g98pro")
+    assert mchose["protocol"]["channels"][0]["link"] == "wireless"
+    assert mchose["protocol"]["channels"][1]["link"] == "wired"
     # 飞智改为基于端口动态判别（有线/2.4G 共享 USB 实例 ID，只能看端口）
     flydigi = next(d for d in data["devices"] if d["id"] == "flydigi-apex4")
     assert flydigi["protocol"]["link"]["mode"] == "port"

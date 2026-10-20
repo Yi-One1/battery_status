@@ -34,7 +34,7 @@ from .tray import TrayController
 
 log = logging.getLogger(__name__)
 
-MARGIN = 26          # 阴影留白
+MARGIN = 12          # 阴影留白，改小以减少截图软件识别的窗口边界与实际内容的偏差
 CONTENT_WIDTH = 420
 HEADER_HEIGHT = 58
 # 面板显示期间重取桌面底图的间隔。取整屏 + 1/8 缩放约 20~30 ms，
@@ -128,7 +128,7 @@ class Panel(QWidget):
         root.setSpacing(0)
 
         self.shell = _Shell(self)
-        apply_shadow(self.shell, blur=54, dy=18, alpha=44)
+        apply_shadow(self.shell, blur=28, dy=10, alpha=40)
         root.addWidget(self.shell)
 
         column = QVBoxLayout(self.shell)

@@ -103,19 +103,21 @@ class DeviceCard(GlassSurface):
     # -- 更新 ---------------------------------------------------------------
     def apply_snapshot(self, snapshot: Snapshot, low_threshold: int) -> None:
         self._snapshot = snapshot
+        display_level = snapshot.display_level
+        display_charging = snapshot.display_charging
         alert = (
             snapshot.online
             and snapshot.level is not None
             and snapshot.level <= low_threshold
             and not snapshot.charging
         )
-        self.gauge.set_state(snapshot.level, snapshot.charging, snapshot.online, alert)
+        self.gauge.set_state(display_level, display_charging, snapshot.online, alert)
         status = snapshot.status_text(low_threshold)
         if not snapshot.online:
             color = theme.TEXT_TERTIARY
-        elif snapshot.charging:
+        elif display_charging:
             color = theme.OK
-        elif snapshot.level is None:
+        elif display_level is None:
             color = theme.TEXT_TERTIARY
         elif alert:
             color = theme.DANGER
@@ -123,7 +125,7 @@ class DeviceCard(GlassSurface):
             color = self._color
         self.status.set_status(status, color)
 
-        level_text = "--" if snapshot.level is None else f"{snapshot.level}%"
+        level_text = "--" if display_level is None else f"{display_level}%"
         self.setToolTip(
             f"{self.name_label.text()}（{self.type_label}）\n"
             f"电量：{level_text} · {status}\n"

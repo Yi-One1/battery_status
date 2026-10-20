@@ -144,6 +144,16 @@ class HidHandle:
             return None
         return bytes(data) if data else None
 
+    def write_feature(self, payload: bytes) -> int:
+        """写入 Feature 报告（部分厂商协议通过 feature 通道问答）。"""
+        if not self._dev:
+            return -1
+        try:
+            return int(self._dev.send_feature_report(list(payload)))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("HID feature 写入失败：%s", exc)
+            return -1
+
     def drain(self, size: int = 64, timeout_ms: int = 30, limit: int = 12) -> list[bytes]:
         """清掉缓冲区里残留的上报，保证后续读到的是新鲜数据。"""
         out: list[bytes] = []

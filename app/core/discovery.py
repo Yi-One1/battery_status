@@ -114,16 +114,40 @@ def describe_group(items: list[HidDeviceInfo]) -> DiscoveredDevice:
     )
 
 
+def _names_overlap(name: str, cfg: DeviceConfig) -> bool:
+    """发现出来的产品名与已知设备名/副标题重叠时，也视为已覆盖。
+
+    飞智冰原狼 4 这类 XInput 手柄会同时暴露多个 HID 集合，其中一些集合的
+    product_string 恰好不含内置 match 的 product_contains 关键字，但名字
+    本身明显是同一台设备；只靠 match 会漏掉，导致自动发现再添一条。
+    """
+    name = (name or "").strip().lower()
+    if not name or is_generic_name(name):
+        return False
+    for known in (cfg.display_name, cfg.subtitle, cfg.id):
+        known = (known or "").strip().lower()
+        if not known:
+            continue
+        # 互相包含，或去掉空格/符号后相等
+        if name in known or known in name:
+            return True
+        if name.replace(" ", "") == known.replace(" ", ""):
+            return True
+    return False
+
+
 def group_covered(items: list[HidDeviceInfo], registry: DeviceRegistry) -> bool:
     """这组接口是否已经被"我们认得的某条配置"接走了。
 
     注意用的是 known_devices()（含墓碑），而不是当前生效的 devices：
     用户把某台设备删掉之后，硬件还是那台硬件，自动发现不该把它当新设备再登记一遍。
     """
+    device = describe_group(items)
     for cfg in registry.known_devices():
-        if not cfg.match:
-            continue
-        if any(DeviceRegistry.matches(info, cfg.match) for info in items):
+        if cfg.match and any(DeviceRegistry.matches(info, cfg.match) for info in items):
+            return True
+        # match 没命中时，再用产品名兜底
+        if _names_overlap(device.name, cfg):
             return True
     return False
 

@@ -96,16 +96,16 @@ def test_settings_auto_flags_persist(env, tmp_path):
     assert saved.prefs.offline_hide_minutes == 30
 
 
-def test_settings_restore_row_hidden_until_something_removed(env):
+def test_settings_restore_button_disabled_until_something_removed(env):
     registry, store = env
     pane = SettingsPane(registry, store)
-    # 面板本身没显示到屏幕上，只能用 isHidden() 读"是否被显式隐藏"
-    assert pane._restore_box.isHidden() is True
+    assert pane._removed_button.isEnabled() is False
+    assert pane._removed_button.text() == "已移除设备"
     assert pane.restore_removed() == 0
 
     pane.remove_device(BUILTIN_ID)
-    assert pane._restore_box.isHidden() is False
-    assert "已移除" in pane._restore_label.text()
+    assert pane._removed_button.isEnabled() is True
+    assert "(1)" in pane._removed_button.text()
 
 
 def test_settings_restore_brings_device_back(env, tmp_path):
@@ -118,7 +118,36 @@ def test_settings_restore_brings_device_back(env, tmp_path):
     assert BUILTIN_ID in pane.device_widgets()
     assert registry.removed_ids() == []
     assert DeviceRegistry(user_dir=tmp_path).get(BUILTIN_ID) is not None
-    assert pane._restore_box.isHidden() is True
+    assert pane._removed_button.isEnabled() is False
+
+
+def test_settings_permanent_remove_deletes_user_device(env, tmp_path):
+    registry, store = env
+    pane = SettingsPane(registry, store)
+    pane.remove_device(BUILTIN_ID)
+    assert registry.permanent_remove(BUILTIN_ID) is True
+    assert registry.get(BUILTIN_ID) is None
+    assert BUILTIN_ID in registry.removed_ids()
+    assert DeviceRegistry(user_dir=tmp_path).get(BUILTIN_ID) is None
+
+
+def test_permanent_remove_user_device_deletes_definition(env, tmp_path):
+    registry, store = env
+    pane = SettingsPane(registry, store)
+    # 先通过添加对话框造一条用户设备
+    dialog = AddDeviceDialog(registry, infos=NEWCOMER)
+    row = dialog.findChildren(_CandidateRow)[0]
+    dialog._add_discovered(row.device)
+    user_id = "auto-0955-7e11"
+    assert registry.get(user_id) is not None
+
+    pane.remove_device(user_id)
+    assert registry.permanent_remove(user_id) is True
+    assert registry.get(user_id) is None
+    assert user_id not in registry.removed_ids()
+    assert registry._user_raw.get(user_id) is None
+    reloaded = DeviceRegistry(user_dir=tmp_path)
+    assert reloaded.get(user_id) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -195,6 +224,19 @@ def test_dialog_manual_add_rejects_out_of_range(env):
     dialog._add_manual()
     assert len(registry.devices) == before
     assert "范围" in dialog.hint.text()
+
+
+def test_auto_discovery_skips_devices_with_same_name_as_builtin(env):
+    """飞智冰原狼 4：当 HID 集合的产品名与内置设备名重合时，不应再次自动登记。"""
+    registry, store = env
+    from app.core.discovery import available_devices
+
+    # 构造一个 product_string 是 "FLYDIGI DIREWOLF 4"、但 match 规则没覆盖的 HID 接口
+    duplicate = [
+        hid(0x045E, 0x028E, 0xFF00, "FLYDIGI DIREWOLF 4", "flydigi-dup", usage=0x01, iface=1),
+    ]
+    found = available_devices(duplicate, registry)
+    assert not any(d.name.upper() == "FLYDIGI DIREWOLF 4" for d in found), "同名重复设备不应被自动发现"
 
 
 # --------------------------------------------------------------------------- #

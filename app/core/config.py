@@ -184,11 +184,32 @@ class DeviceRegistry:
         for device_id, raw in self._user_raw.items():
             if device_id in removed:
                 continue
+            # 对来源为 builtin 的用户副本，与最新内置配置做深度合并：
+            # 用户改过的字段保留，内置新增的字段（如 wired_pid）自动继承。
+            bundled = next((d for d in self._bundled_devices if d.id == device_id), None)
+            if bundled and str(raw.get("source") or SOURCE_USER) == SOURCE_BUILTIN:
+                raw = self._merge_device_raw(bundled.to_raw(), raw)
             cfg = self._parse_device(raw, default_source=SOURCE_USER)
             if cfg is None:
                 continue
             merged_devices[device_id] = cfg
         self.devices = list(merged_devices.values())
+
+    @staticmethod
+    def _merge_device_raw(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+        """深度合并设备配置：override 非空字段优先，base 提供默认值。
+
+        用于来源为 builtin 的用户副本随程序升级自动继承新字段。
+        """
+        merged: dict[str, Any] = copy.deepcopy(base)
+        for key, value in override.items():
+            if value is None:
+                continue
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = DeviceRegistry._merge_device_raw(merged[key], value)
+            else:
+                merged[key] = copy.deepcopy(value)
+        return merged
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
@@ -316,6 +337,27 @@ class DeviceRegistry:
             self.save_user_config()
         return True
 
+    def permanent_remove(self, device_id: str, *, persist: bool = True) -> bool:
+        """彻底移除：从用户配置里删除该设备定义，并确保它不会重新出现。
+
+        对内置设备：保留在 removed 墓碑中（否则下次启动内置模板会把它加回来）。
+        对用户/自动设备：删除 _user_raw 中的定义，并移出 removed 墓碑。
+        """
+        if device_id not in self._removed and not self.exists(device_id):
+            return False
+        is_builtin = self.is_builtin(device_id)
+        self._user_raw.pop(device_id, None)
+        if is_builtin:
+            if device_id not in self._removed:
+                self._removed.append(device_id)
+        elif device_id in self._removed:
+            self._removed.remove(device_id)
+        self._rebuild()
+        if persist:
+            self.save_user_config()
+        log.info("彻底移除设备 %s", device_id)
+        return True
+
     def set_enabled(self, device_id: str, enabled: bool, *, persist: bool = True) -> bool:
         cfg = self.get(device_id)
         if cfg is None:
@@ -411,6 +453,9 @@ class Preferences:
     live_glass: bool = True
     auto_hide_offline: bool = True
     offline_hide_minutes: int = DEFAULT_OFFLINE_HIDE_MINUTES
+    # 托盘图标点击行为
+    tray_click_action: str = "toggle"
+    tray_double_click_action: str = "settings"
 
     # -- 序列化 -------------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
@@ -439,6 +484,10 @@ class Preferences:
         prefs.offline_hide_minutes = max(1, min(720, prefs.offline_hide_minutes))
         if prefs.tray_mode not in ("per-device", "merged"):
             prefs.tray_mode = DEFAULT_TRAY_MODE
+        if prefs.tray_click_action not in ("toggle", "show", "settings"):
+            prefs.tray_click_action = "toggle"
+        if prefs.tray_double_click_action not in ("toggle", "show", "settings"):
+            prefs.tray_double_click_action = "settings"
         prefs.sanitize_types(registry)
         prefs.sanitize_devices()
         return prefs

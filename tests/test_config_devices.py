@@ -111,6 +111,35 @@ def test_user_entry_overrides_builtin_instead_of_duplicating(registry):
     assert registry.is_builtin(BUILTIN_ID)
 
 
+def test_builtin_user_entry_inherits_new_bundled_fields(registry, tmp_path):
+    """旧用户配置里的 builtin 副本应随内置模板升级自动继承新增字段。"""
+    user_path = tmp_path / "devices.json"
+    raw = {
+        "devices": [
+            {
+                "id": BUILTIN_ID,
+                "type": "mouse",
+                "display_name": "罗技 GPW2",
+                "source": "builtin",
+                "match": {"vid": 1133, "product_contains": ["receiver", "pro x wireless"]},
+                "protocol": {
+                    "name": "logitech_hidpp",
+                    "device_name_contains": ["superlight", "pro x", "g pro"],
+                    "device_index": "auto",
+                },
+                "options": {"demo_level": 87},
+            }
+        ],
+        "removed": [],
+    }
+    user_path.write_text(json.dumps(raw), encoding="utf-8")
+    registry.reload()
+
+    cfg = registry.get(BUILTIN_ID)
+    assert cfg.protocol.get("wired_pid") == "0xC094"
+    assert cfg.display_name == "罗技 GPW2"  # 用户字段保留
+
+
 def test_to_raw_drops_empty_optional_fields():
     raw = DeviceConfig(id="x", type="mouse", display_name="X").to_raw()
     assert "subtitle" not in raw and "notes" not in raw

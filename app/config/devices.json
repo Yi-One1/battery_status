@@ -63,7 +63,8 @@
           "pro x",
           "g pro"
         ],
-        "device_index": "auto"
+        "device_index": "auto",
+        "wired_pid": "0xC094"
       },
       "options": {
         "demo_level": 87
@@ -108,7 +109,10 @@
       "enabled": true,
       "match": {
         "vid": 9610,
-        "pid": 443,
+        "pid": [
+          443,
+          441
+        ],
         "product_contains": [
           "2.4g wireless receiver",
           "mchose",
@@ -118,19 +122,46 @@
       },
       "protocol": {
         "name": "vendor_query",
-        "command": "13 4A 01 00 02 00",
-        "report_length": 20,
-        "checksum": "sum8",
-        "reply_prefix": "13 4A 01 00 02",
-        "level_offset": 5,
-        "timeout_ms": 400,
-        "retries": 2,
-        "link": "wireless"
+        "channels": [
+          {
+            "match": {
+              "pid": 443,
+              "usage_page": 65282,
+              "usage": 2
+            },
+            "command": "13 4A 01 00 02 00",
+            "report_length": 20,
+            "checksum": "sum8",
+            "reply_prefix": "13 4A 01 00 02",
+            "level_offset": 5,
+            "charging_byte": 6,
+            "charging_bit": 0,
+            "charging_invert": true,
+            "timeout_ms": 400,
+            "retries": 2,
+            "link": "wireless"
+          },
+          {
+            "match": {
+              "pid": 441,
+              "usage_page": 65282,
+              "usage": 1
+            },
+            "feature_report": true,
+            "feature_id": 9,
+            "report_length": 10,
+            "reply_prefix": "09 87",
+            "level_offset": 8,
+            "link": "wired",
+            "presence_report": true,
+            "charging": true
+          }
+        ]
       },
       "options": {
         "demo_level": 64
       },
-      "notes": "实测（2026-10-20，Frida 追踪 MCHOSE HUB + 真机验证）：0xFF02/0x02 接口的 20 字节通道。写 13 4A 01 00 02 00 + 补零到 19 字节 + 尾字节取前 19 字节之和(0x60) → 收 13 4A 01 00 02 64 01 …,byte5 = 0x64 = 100%,与 M HUB 显示一致；延迟 9~22ms,6/6 命中。byte6(0x01)含义未确认,不当充电位用。注意 dongle 会把不认识的命令原样回显,回显帧与命令逐字节相同,必须排掉否则电量位为 0 会读成 0%。标准电量页为空;0xFF00 的 6 字节 feature 只有 0x05=版本字符串; 0xFF01 只有 feature 0x0A;13 05 是固定设备信息应答,与电量无关。"
+      "notes": "2.4G 接收器 PID=0x01BB(443)，有线模式 PID=0x01B9(441)。无线通道：0xFF02/0x02 的 20 字节 output/input，写 13 4A 01 00 02 00（sum8 校验）→ 收 13 4A 01 00 02 <电量> <状态> …，byte5=电量；byte6 bit0 为充电标志（0x01=充电中）。有线通道：0xFF02/0x01 的 feature report 0x09（10 字节），读回 09 87 … <电量> …，byte8=电量；实测有线模式稳定返回当前电量。注意 dongle 会把不认识的命令原样回显，回显帧必须排掉否则电量位为 0 会读成 0%。"
     },
     {
       "id": "edifier-g3max",

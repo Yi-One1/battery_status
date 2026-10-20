@@ -65,13 +65,38 @@ class Snapshot:
     def link_label(self) -> str:
         return LINK_LABELS.get(self.link, "")
 
+    @property
+    def display_charging(self) -> Optional[bool]:
+        """UI 实际应显示的充电状态。
+
+        迈从 G98 PRO 在 2.4G/有线充电时固定把电量位报告成 50% 作为占位符，
+        且有些通道不给出充电位。当协议没有明确充电位、但读到 50% 时，
+        按充电处理，避免把占位符当成真实电量。
+        """
+        if self.charging is True:
+            return True
+        if self.charging is None and self.level == 50 and self.online:
+            return True
+        return self.charging
+
+    @property
+    def display_level(self) -> Optional[int]:
+        """UI 实际应显示的电量。
+
+        当设备正在充电且电量位为 50% 时，把它视为充电占位符（迈从 G98 PRO
+        固件行为），不显示具体百分比，只显示"充电中"和绿色闪电。
+        """
+        if self.level == 50 and self.display_charging:
+            return None
+        return self.level
+
     def status_text(self, low_threshold: int = 20) -> str:
         if not self.online:
             return "未连接"
         if self.sleeping:
             return "休眠中"
         link = self.link_label
-        if self.charging:
+        if self.display_charging:
             return f"{link} · 充电中" if link else "充电中"
         if self.level is None:
             # 读不到电量时，链路本身就是唯一拿得出手的真实信息。

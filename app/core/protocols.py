@@ -307,8 +307,19 @@ def read_logitech(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
         reading = session.read_battery(target.index)
         if not reading.ok:
             _HIDPP_CACHE.pop(info.path.decode("utf-8", "ignore"), None)
-        # 索引 0xFF 是有线模式（HID++ 通道本身就是设备），1~6 是接收器上的无线设备
-        reading.link = LINK_WIRED if target.wired else LINK_WIRELESS
+        # 索引 0xFF 是有线模式（HID++ 通道本身就是设备），1~6 是接收器上的无线设备。
+        # 但部分新型号（如 GPW2 固件）插线后仍以索引 1 出现在有线 HID 接口上，
+        # 因此再用 configured wired_pid 做一次兜底判别。
+        raw_wired_pid = proto.get("wired_pid")
+        wired_pids: set[int] = set()
+        if isinstance(raw_wired_pid, (int, str)):
+            wired_pids = {int(raw_wired_pid, 0) if isinstance(raw_wired_pid, str) else int(raw_wired_pid)}
+        elif isinstance(raw_wired_pid, list):
+            wired_pids = {int(p, 0) if isinstance(p, str) else int(p) for p in raw_wired_pid}
+        if info.pid in wired_pids:
+            reading.link = LINK_WIRED
+        else:
+            reading.link = LINK_WIRED if target.wired else LINK_WIRELESS
         if target.name:
             reading.detail = f"{target.name} · {reading.detail}" if reading.ok else reading.detail
         return reading
@@ -471,6 +482,37 @@ def apply_checksum(payload: bytes, scheme: str) -> bytes:
     return body + bytes([value])
 
 
+def _vendor_channels(cfg: DeviceConfig) -> list[dict[str, Any]]:
+    """把 protocol 拆成一条或多条通道（channel）。兼容旧版扁平配置。
+
+    当一台设备在无线/有线两种形态下使用不同接口或不同报文格式时，
+    用 channels 为每种形态配独立的 match + 读取参数；程序会按顺序尝试，
+    命中第一条成功通道就返回。
+    """
+    proto = cfg.protocol
+    channels = proto.get("channels")
+    if not channels:
+        return [proto]
+    base = {k: v for k, v in proto.items() if k != "channels"}
+    out: list[dict[str, Any]] = []
+    for ch in channels:
+        merged = dict(base)
+        merged.update(ch)
+        out.append(merged)
+    return out
+
+
+def _channel_match(match_cfg: dict[str, Any], channel_match: dict[str, Any]) -> dict[str, Any]:
+    """设备级 match 与通道级 match 合并；通道级更具体，覆盖设备级。"""
+    merged = dict(match_cfg)
+    merged.update(channel_match)
+    return merged
+
+
+def _info_matches_channel(info: HidDeviceInfo, cfg: DeviceConfig, channel: dict[str, Any]) -> bool:
+    return DeviceRegistry.matches(info, _channel_match(cfg.match, channel.get("match") or {}))
+
+
 def parse_vendor_reply(
     data: bytes,
     *,
@@ -480,6 +522,7 @@ def parse_vendor_reply(
     level_offset: int = -1,
     charging_byte: Optional[int] = None,
     charging_bit: int = 0,
+    charging_invert: bool = False,
 ) -> Optional[tuple[int, Optional[bool]]]:
     """从应答报文里取出 (电量, 是否充电)；不匹配或越界返回 None。"""
     if level_offset < 0 or level_offset >= len(data):
@@ -495,23 +538,78 @@ def parse_vendor_reply(
         return None
     charging: Optional[bool] = None
     if isinstance(charging_byte, int) and 0 <= charging_byte < len(data):
-        charging = bool((data[charging_byte] >> charging_bit) & 0x01)
+        raw = (data[charging_byte] >> charging_bit) & 0x01
+        charging = bool(raw) if not charging_invert else not bool(raw)
     return level, charging
 
 
-def read_vendor_query(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
-    proto = cfg.protocol
-    caps = device_caps(info.path)
-    length = int(proto.get("report_length") or (caps.input_length if caps else 64))
+def _build_reading_from_parsed(
+    data: bytes,
+    channel: dict[str, Any],
+    info: HidDeviceInfo,
+    source_detail: str,
+) -> Reading:
+    """把 parse_vendor_reply 的结果转成 Reading；处理 presence / 关机判定。"""
+    parsed = parse_vendor_reply(
+        data,
+        prefix=_render_prefix(channel.get("reply_prefix", ""), info),
+        code_offset=channel.get("reply_code_offset"),
+        code_value=channel.get("reply_code"),
+        level_offset=int(channel.get("level_offset", -1)),
+        charging_byte=channel.get("charging_byte"),
+        charging_bit=int(channel.get("charging_bit", 0) or 0),
+        charging_invert=bool(channel.get("charging_invert")),
+    )
+    if parsed is None:
+        return Reading.fail("")
+    level, charging = parsed
+    presence = channel.get("presence") or {}
+    if level == 0 and isinstance(presence.get("offset"), int):
+        offset = int(presence["offset"])
+        expected = int(presence.get("value", 1))
+        if 0 <= offset < len(data) and data[offset] != expected:
+            return Reading(
+                offline=True,
+                detail=(
+                    f"设备已关闭（电量位 0，状态字节 0x{data[offset]:02X}）"
+                    f" · {bytes(data[:8]).hex(' ').upper()}"
+                ),
+            )
+    return Reading(
+        level=level,
+        charging=charging,
+        source="vendor-query",
+        ok=True,
+        detail=f"{source_detail} · {len(data)}B · {bytes(data[:8]).hex(' ').upper()}",
+    )
+
+
+def _render_prefix(template: Any, info: HidDeviceInfo | None) -> bytes:
+    """渲染 reply_prefix 模板；info 为 None 时表示已经处理过的字节串。"""
+    if isinstance(template, bytes):
+        return template
+    text = str(template or "")
+    if not text.strip():
+        return b""
+    if info is None:
+        return bytes.fromhex(text)
+    return render_hex_template(text, info)
+
+
+def _read_vendor_write_read(
+    channel: dict[str, Any], info: HidDeviceInfo, caps: Optional[Any]
+) -> Reading:
+    """通过 output/input 报告做问答式读取（传统 vendor_query）。"""
+    length = int(channel.get("report_length") or (caps.input_length if caps else 64))
     if length <= 0:
         return Reading.fail("接口报告长度未知")
 
     command = build_vendor_command(
-        str(proto.get("command", "")), info, length, str(proto.get("checksum", "") or "")
+        str(channel.get("command", "")), info, length, str(channel.get("checksum", "") or "")
     )
-    prefix = render_hex_template(str(proto.get("reply_prefix", "")), info)
-    timeout_ms = int(proto.get("timeout_ms", 300))
-    retries = int(proto.get("retries", 1))
+    prefix = render_hex_template(str(channel.get("reply_prefix", "")), info)
+    timeout_ms = int(channel.get("timeout_ms", 300))
+    retries = int(channel.get("retries", 1))
 
     with HidHandle(info) as handle:
         if not handle.is_open:
@@ -530,47 +628,95 @@ def read_vendor_query(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
                 # 不排掉的话，回显里"电量位"恰好是 0，会被读成 0% —— 比读不到更糟。
                 if bytes(data) == command:
                     continue
-                parsed = parse_vendor_reply(
-                    data,
-                    prefix=prefix,
-                    code_offset=proto.get("reply_code_offset"),
-                    code_value=proto.get("reply_code"),
-                    level_offset=int(proto.get("level_offset", -1)),
-                    charging_byte=proto.get("charging_byte"),
-                    charging_bit=int(proto.get("charging_bit", 0) or 0),
-                )
-                if parsed is None:
-                    continue
-                level, charging = parsed
-                presence = proto.get("presence") or {}
-                if level == 0 and isinstance(presence.get("offset"), int):
-                    # 关机后 dongle 还插着，也会老老实实回一帧"电量 0"。
-                    # 光看电量分不出"真的没电"和"设备关了"，所以再看一个状态字节：
-                    # 电量 0 且状态字节不是"在用"的值 → 判定为已关机（未连接）。
-                    # 反过来，电量非 0 时完全不信这个字节 —— 它的确切含义还没验证过
-                    # （可能是"已连接"，也可能是"充电中"），宁可保守。
-                    offset = int(presence["offset"])
-                    expected = int(presence.get("value", 1))
-                    if 0 <= offset < len(data) and data[offset] != expected:
-                        return Reading(
-                            offline=True,
-                            detail=(
-                                f"设备已关闭（电量位 0，状态字节 0x{data[offset]:02X}）"
-                                f" · {bytes(data[:8]).hex(' ').upper()}"
-                            ),
-                        )
-                return Reading(
-                    level=level,
-                    charging=charging,
-                    source="vendor-query",
-                    ok=True,
-                    detail=f"厂商查询 · {len(data)}B · {bytes(data[:8]).hex(' ').upper()}",
-                )
+                reading = _build_reading_from_parsed(data, channel, info, "厂商查询")
+                if reading.ok or reading.offline:
+                    return reading
             time.sleep(0.03 * (attempt + 1))
-    # 没应答就是"这轮不知道"：既不声称设备在（detected），也不声称它在休眠（sleeping）。
-    # 厂商 dongle 分不出这三种情况，硬猜只会让关机变成"休眠中"或者永远"暂无电量"。
-    # 交给监测线程的去抖：连续两轮读不到 → 未连接；只是一次抖动 → 保留上次电量。
     return Reading.fail("厂商查询无应答（设备可能已关机或已断开）")
+
+
+def _read_vendor_feature(
+    channel: dict[str, Any], info: HidDeviceInfo, caps: Optional[Any]
+) -> Reading:
+    """通过 Feature 报告读取（部分键盘/鼠标的有线模式使用此通道）。"""
+    report_id = int(channel.get("feature_id", 0))
+    # 解析时按配置 report_length；读取缓冲区按 HID 描述符声明的 feature_length，
+    # 两者不一致时取较大值，否则 hidapi 可能因缓冲区不足返回 None。
+    parse_length = int(
+        channel.get("report_length") or (caps.feature_length if caps else 64)
+    )
+    read_length = parse_length
+    if caps and caps.feature_length > read_length:
+        read_length = caps.feature_length
+    if read_length <= 0:
+        return Reading.fail("Feature 报告长度未知")
+
+    # 有些设备需要先写一条 feature 命令再读；没有 command 时直接读。
+    feature_command = b""
+    if channel.get("command"):
+        feature_command = build_vendor_command(
+            str(channel.get("command", "")),
+            info,
+            parse_length,
+            str(channel.get("checksum", "") or ""),
+        )
+
+    with HidHandle(info) as handle:
+        if not handle.is_open:
+            return Reading.fail("设备被占用或已拔出")
+        if feature_command:
+            if handle.write_feature(feature_command) < 0:
+                return Reading.fail("Feature 命令写入失败")
+            time.sleep(0.02)
+        data = handle.read_feature(report_id, read_length)
+        if data:
+            reading = _build_reading_from_parsed(data, channel, info, "厂商 Feature")
+            if reading.ok or reading.offline:
+                return reading
+        # 有些通道只是用来确认设备在线，不保证能解析出电量；
+        # 只要能打开对应 HID 接口就认为设备存在，读不到电量也返回 detected。
+        if channel.get("presence_report"):
+            return Reading(
+                detected=True,
+                charging=bool(channel.get("charging")),
+                link=str(channel.get("link", "")),
+                source="vendor-query",
+                detail="设备在线（电量不可读）" if data else "设备在线（Feature 无应答）",
+            )
+        if not data:
+            return Reading.fail("Feature 报告无应答")
+        return Reading.fail("Feature 报告格式不匹配")
+
+
+def read_vendor_query(cfg: DeviceConfig, info: HidDeviceInfo) -> Reading:
+    caps = device_caps(info.path)
+    last = Reading.fail("该接口没有匹配的查询通道")
+
+    for channel in _vendor_channels(cfg):
+        if not _info_matches_channel(info, cfg, channel):
+            continue
+        # Feature 通道必须落在真有 Feature 能力的接口上，避免 hidapi 在 feature_length=0 的集合上浪费时间
+        if channel.get("feature_report"):
+            if not caps or caps.feature_length <= 0:
+                last = Reading.fail("接口无 Feature 报告能力")
+                continue
+            reading = _read_vendor_feature(channel, info, caps)
+        else:
+            reading = _read_vendor_write_read(channel, info, caps)
+
+        # 通道若显式声明了链路，优先使用它（无线/有线同一设备的场景）。
+        if reading.link:
+            pass
+        elif channel.get("link"):
+            reading.link = str(channel["link"])
+        elif cfg.protocol.get("link"):
+            reading.link = str(cfg.protocol["link"])
+
+        if reading.ok or reading.offline:
+            return reading
+        last = reading
+
+    return last
 
 
 def _apply_port_link(reading: Reading, cfg: DeviceConfig, infos: list[HidDeviceInfo]) -> None:
@@ -636,17 +782,23 @@ def _read_device(cfg: DeviceConfig, infos: list[HidDeviceInfo], used_slots: Opti
         if name == "logitech_hidpp":
             sleeping: Optional[Reading] = None
             detected: Optional[Reading] = None
+            wireless_ok: Optional[Reading] = None
             for info in candidate_infos(infos, cfg)[:4]:
                 reading = read_logitech(cfg, info)
                 if reading.ok:
-                    return reading
+                    # 同时存在无线接收器和有线接口时，优先使用有线通道，
+                    # 避免插线充电时仍显示 2.4G 连接。
+                    if reading.link == LINK_WIRED:
+                        return reading
+                    wireless_ok = wireless_ok or reading
+                    continue
                 if reading.sleeping:
                     # 这一路休眠不代表别的路不行：插着线的时候鼠标应答在索引 0xFF 上，
                     # 而接收器那边就是休眠/未配对。原来这里直接 return，于是有线变成了「休眠中」。
                     sleeping = sleeping or reading
                     continue
                 detected = detected or reading
-            return sleeping or detected or Reading.fail("未找到可用的 HID++ 接口")
+            return wireless_ok or sleeping or detected or Reading.fail("未找到可用的 HID++ 接口")
         if name == "xinput":
             return xinput.read_device(cfg.protocol.get("slot", "auto"), used_slots if used_slots is not None else set())
         if name == "hid":
@@ -660,7 +812,9 @@ def _read_device(cfg: DeviceConfig, infos: list[HidDeviceInfo], used_slots: Opti
         if name == "vendor_query":
             last = Reading.fail("未检测到设备")
             candidates = [i for i in candidate_infos(infos, cfg) if i.usage_page >= 0xFF00]
-            for info in candidates[:6]:
+            # 双模设备在无线/有线两种形态下会各暴露多个厂商集合，
+            # 必须把搜索范围扩到足够大，否则真正的 feature 接口可能落在第 7、8 位之后。
+            for info in candidates[:12]:
                 reading = read_vendor_query(cfg, info)
                 if reading.ok:
                     return reading
