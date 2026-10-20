@@ -234,11 +234,13 @@ def _grab(rect: QRect) -> Optional[QImage]:
     return image
 
 
-def capture_screen(exclude: Optional[QRect] = None) -> Optional[Backdrop]:
+def capture_screen(exclude: Optional[QRect] = None, *, strong_blur: bool = False) -> Optional[Backdrop]:
     """截当前屏幕整屏，缩到 1/SCALE 并模糊，返回带坐标系的底图。
 
     exclude 是**现在被本程序自己占住**的区域（面板窗口矩形，全局坐标），
     取样时会被抹平，避免把面板画进底图。
+
+    strong_blur=True 时应用更重的模糊，用于"高斯模糊"背景模式。
     """
     screen = QGuiApplication.primaryScreen()
     target = screen
@@ -268,7 +270,8 @@ def capture_screen(exclude: Optional[QRect] = None) -> Optional[Backdrop]:
 
     palette = analyse(small)
     # 已经在 1/SCALE 尺度上了，再来一轮半分辨率往返就够了
-    blurred = blur_image(small, divisor=2, passes=2)
+    # strong_blur 时使用更大半径，让背景更柔和
+    blurred = blur_image(small, divisor=4 if strong_blur else 2, passes=4 if strong_blur else 2)
     return Backdrop(
         pixmap=QPixmap.fromImage(blurred),
         palette=palette,

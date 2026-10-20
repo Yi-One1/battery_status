@@ -18,7 +18,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import autostart
-from ..core.config import DeviceConfig, DeviceRegistry, SettingsStore
+from ..core.config import (
+    BACKGROUND_GAUSSIAN_BLUR,
+    BACKGROUND_LIVE_GLASS,
+    BACKGROUND_WHITE,
+    DeviceConfig,
+    DeviceRegistry,
+    SettingsStore,
+)
 from . import theme
 from .add_device import AddDeviceDialog
 from .confirm import ConfirmDialog
@@ -132,13 +139,21 @@ class SettingsPane(QWidget):
         column.addWidget(Divider())
 
         column.addWidget(self._section("外观"))
-        self.live_glass_toggle = ToggleSwitch()
-        self.live_glass_toggle.setChecked(store.prefs.live_glass)
-        self.live_glass_toggle.toggled.connect(self._on_live_glass)
+        self.background_mode = SegmentedControl(
+            [
+                (BACKGROUND_LIVE_GLASS, "柔光玻璃"),
+                (BACKGROUND_WHITE, "纯白色"),
+                (BACKGROUND_GAUSSIAN_BLUR, "高斯模糊"),
+            ],
+            height=24,
+        )
+        self.background_mode.set_value(store.prefs.background_mode)
+        self.background_mode.setFixedWidth(202)
+        self.background_mode.changed.connect(self._on_background_mode)
         column.addWidget(SettingRow(
-            "实时柔光玻璃",
-            "窗口拖动时背景跟着走；关闭则固定为显示时的桌面背景",
-            self.live_glass_toggle,
+            "窗口背景",
+            "柔光玻璃跟随桌面；纯白色最省电；高斯模糊取桌面并加重模糊",
+            self.background_mode,
         ))
 
         column.addWidget(self._section("不单独设置时，按外设类型取默认外观"))
@@ -532,8 +547,8 @@ class SettingsPane(QWidget):
         self.store.prefs.low_battery_threshold = value
         self._commit()
 
-    def _on_live_glass(self, checked: bool) -> None:
-        self.store.prefs.live_glass = checked
+    def _on_background_mode(self, value: str) -> None:
+        self.store.prefs.background_mode = value
         self._commit()
 
     def _on_notify(self, checked: bool) -> None:

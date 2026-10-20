@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.config import DeviceRegistry, SettingsStore
+from ..core.config import BACKGROUND_GAUSSIAN_BLUR, BACKGROUND_LIVE_GLASS, BACKGROUND_WHITE, DeviceRegistry, SettingsStore
 from ..core.discovery import build_device_config
 from ..core.model import Snapshot
 from ..core.monitor import Monitor
@@ -308,7 +308,7 @@ class Panel(QWidget):
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            if self.store.prefs.live_glass:
+            if self.store.prefs.background_mode == BACKGROUND_LIVE_GLASS:
                 self._drag_update_timer.start()
             return False
         if event.type() == QEvent.Type.MouseMove and self._drag_offset is not None:
@@ -339,19 +339,25 @@ class Panel(QWidget):
         self.monitor.refresh()
 
     def _refresh_backdrop(self) -> None:
-        """取整屏桌面做玻璃的底，并从中取环境色。失败则回落静态玻璃。
+        """根据背景模式取桌面底图或回落静态背景。
 
-        取整屏（而不是窗口那一块）是"实时"的关键：板材自带屏幕原点，
-        绘制端按控件的屏幕坐标取像素，所以面板拖动时颜色天然跟着走；
-        显示期间由 `_backdrop_timer` 每 15 秒重取一次，换壁纸也能跟上。
-        重取时要把面板自己占的那块抹掉（`exclude`），否则每刷一次就白一层。
-
-        ``live_glass=False`` 时只取一次，后续保持固定背景，换壁纸不再自动跟上。
+        live_glass: 取整屏并做柔光玻璃自适应；拖动时颜色跟着走。
+        gaussian_blur: 取整屏并加重模糊，背景更柔和。
+        white: 不截屏，直接使用纯白色背景（最省电、最稳定）。
         """
-        if not self.store.prefs.live_glass and self._has_backdrop:
+        mode = self.store.prefs.background_mode
+        if mode == BACKGROUND_WHITE:
+            clear_backdrop()
+            self._has_backdrop = False
+            self._apply_window_blur()
             return
+
+        if mode == BACKGROUND_LIVE_GLASS and self._has_backdrop:
+            # 柔光玻璃模式下已经取过底图就不再重复取，靠定时器刷新
+            return
+
         exclude = self.frameGeometry().adjusted(-6, -6, 6, 6) if self.isVisible() else None
-        backdrop = capture_screen(exclude=exclude)
+        backdrop = capture_screen(exclude=exclude, strong_blur=(mode == BACKGROUND_GAUSSIAN_BLUR))
         if backdrop is None or not backdrop.is_valid():
             if not self._has_backdrop:
                 clear_backdrop()
@@ -419,10 +425,13 @@ class Panel(QWidget):
         super().showEvent(event)
         self._shown_at = time.monotonic()
         self._apply_window_blur()
-        # 固定背景模式下只取一次；实时模式下启动周期性刷新
-        if self.store.prefs.live_glass:
+        mode = self.store.prefs.background_mode
+        # 白色模式不截屏、不刷新；柔光/高斯模式定时重取
+        if mode in (BACKGROUND_LIVE_GLASS, BACKGROUND_GAUSSIAN_BLUR):
             self._backdrop_timer.start()
-        elif not self._has_backdrop:
+        elif mode == BACKGROUND_WHITE:
+            self._backdrop_timer.stop()
+        if not self._has_backdrop and mode != BACKGROUND_WHITE:
             self._refresh_backdrop()
 
 
@@ -433,12 +442,16 @@ class Panel(QWidget):
         super().hideEvent(event)
 
     def _apply_window_blur(self) -> None:
-        """只有"有没有取到桌面底图"这一件事要决：取到了就让壁纸透上来，没取到就用实一点的静态玻璃。
+        """根据背景模式决定外壳不透明度：
 
-        以前这里还有一条 DWM Acrylic 分支（设置里的「真实毛玻璃」），但自从底图改成整屏取样之后，
-        那条分支只在"截不到屏幕"时才会走到，开关按下去永远不会变 —— 已经删掉了。
+        - 柔光玻璃 / 高斯模糊：有底图时让壁纸透上来，无底图时更实一些。
+        - 纯白色：不截屏，直接用接近实色的白底。
         """
-        self.shell.base_alpha = shell_alpha(self._has_backdrop)
+        mode = self.store.prefs.background_mode
+        if mode == BACKGROUND_WHITE:
+            self.shell.base_alpha = SHELL_ALPHA_STATIC
+        else:
+            self.shell.base_alpha = shell_alpha(self._has_backdrop)
         self.shell.update()
 
     # ------------------------------------------------------------- 设备热插拔
@@ -487,6 +500,13 @@ class Panel(QWidget):
                 card.set_style(self.store.prefs.style_for_device(cfg))
         self.shell.setFixedSize(self.shell.width(), self.shell.height())
         self._resize_for_rows()
+        # 背景模式切换时立即生效
+        mode = self.store.prefs.background_mode
+        if mode == BACKGROUND_WHITE:
+            self._backdrop_timer.stop()
+        elif mode in (BACKGROUND_LIVE_GLASS, BACKGROUND_GAUSSIAN_BLUR):
+            self._backdrop_timer.start()
+        self._refresh_backdrop()
         self._apply_window_blur()
         self.monitor.set_prefs(self.store.prefs)
         if self._snapshots:

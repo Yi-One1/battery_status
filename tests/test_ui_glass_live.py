@@ -1,9 +1,9 @@
-"""柔光玻璃实时跟随（问题2）的测试。
+"""窗口背景模式测试。
 
 验证：
-  1. Preferences 能读写 live_glass 开关；
-  2. Panel 拖动时启动 _drag_update_timer，让玻璃按新位置重绘；
-  3. 固定背景模式下只取一次，不再周期性重取。
+  1. Preferences 能正确读写并迁移 background_mode；
+  2. 柔光玻璃模式下拖动会启动重绘定时器，白色/高斯模糊模式不启动；
+  3. 白色模式不截屏，柔光玻璃已取到背景后不再重复截屏。
 """
 from __future__ import annotations
 
@@ -11,26 +11,47 @@ import pytest
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QMouseEvent
 
-from app.core.config import Preferences
+from app.core.config import (
+    BACKGROUND_GAUSSIAN_BLUR,
+    BACKGROUND_LIVE_GLASS,
+    BACKGROUND_WHITE,
+    Preferences,
+)
 
 
 pytestmark = pytest.mark.usefixtures("qapp")
 
 
-def test_preferences_live_glass_defaults_true():
+def test_preferences_background_mode_defaults_to_live_glass():
     prefs = Preferences()
-    assert prefs.live_glass is True
+    assert prefs.background_mode == BACKGROUND_LIVE_GLASS
 
 
-def test_preferences_live_glass_read_from_dict(tmp_path):
+def test_preferences_live_glass_migrates_to_background_mode(tmp_path):
     from app.core.config import DeviceRegistry
+
     registry = DeviceRegistry(user_dir=tmp_path)
     prefs = Preferences.from_dict({"live_glass": False}, registry)
-    assert prefs.live_glass is False
+    assert prefs.background_mode == BACKGROUND_WHITE
+
+    prefs2 = Preferences.from_dict({"live_glass": True}, registry)
+    assert prefs2.background_mode == BACKGROUND_LIVE_GLASS
 
 
-def test_panel_drag_starts_update_timer(monkeypatch, tmp_path):
-    """鼠标按下时，实时玻璃模式应启动拖动刷新定时器。"""
+def test_preferences_background_mode_roundtrip(tmp_path):
+    from app.core.config import DeviceRegistry, SettingsStore
+
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    store.prefs.background_mode = BACKGROUND_GAUSSIAN_BLUR
+    store.save()
+
+    again = SettingsStore(registry, path=tmp_path / "preferences.json")
+    assert again.prefs.background_mode == BACKGROUND_GAUSSIAN_BLUR
+
+
+def test_panel_drag_starts_update_timer_in_live_glass(monkeypatch, tmp_path):
+    """鼠标按下时，柔光玻璃模式应启动拖动刷新定时器。"""
     from app.core.config import DeviceRegistry, SettingsStore
     from app.core.monitor import Monitor
     from app.ui.panel import Panel
@@ -38,13 +59,12 @@ def test_panel_drag_starts_update_timer(monkeypatch, tmp_path):
 
     registry = DeviceRegistry(user_dir=tmp_path)
     store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    store.prefs.background_mode = BACKGROUND_LIVE_GLASS
     monitor = Monitor(registry, store.prefs)
     tray = TrayController(registry, store)
 
     panel = Panel(registry, store, monitor, tray)
-
-    # 默认开启实时玻璃
-    assert panel.store.prefs.live_glass is True
+    assert panel.store.prefs.background_mode == BACKGROUND_LIVE_GLASS
     assert not panel._drag_update_timer.isActive()
 
     pos = QPoint(10, 10)
@@ -60,7 +80,6 @@ def test_panel_drag_starts_update_timer(monkeypatch, tmp_path):
 
     assert panel._drag_update_timer.isActive()
 
-    # 释放后应停止
     release = QMouseEvent(
         QEvent.Type.MouseButtonRelease,
         pos,
@@ -73,8 +92,8 @@ def test_panel_drag_starts_update_timer(monkeypatch, tmp_path):
     assert not panel._drag_update_timer.isActive()
 
 
-def test_panel_drag_does_not_start_timer_when_live_glass_off(monkeypatch, tmp_path):
-    """关闭实时玻璃后，拖动不应启动高频率刷新定时器。"""
+def test_panel_drag_does_not_start_timer_in_white_mode(monkeypatch, tmp_path):
+    """白色模式下拖动不应启动高频率刷新定时器。"""
     from app.core.config import DeviceRegistry, SettingsStore
     from app.core.monitor import Monitor
     from app.ui.panel import Panel
@@ -82,12 +101,11 @@ def test_panel_drag_does_not_start_timer_when_live_glass_off(monkeypatch, tmp_pa
 
     registry = DeviceRegistry(user_dir=tmp_path)
     store = SettingsStore(registry, path=tmp_path / "preferences.json")
-    store.prefs.live_glass = False
+    store.prefs.background_mode = BACKGROUND_WHITE
     monitor = Monitor(registry, store.prefs)
     tray = TrayController(registry, store)
 
     panel = Panel(registry, store, monitor, tray)
-    assert panel.store.prefs.live_glass is False
 
     pos = QPoint(10, 10)
     event = QMouseEvent(
@@ -102,17 +120,41 @@ def test_panel_drag_does_not_start_timer_when_live_glass_off(monkeypatch, tmp_pa
     assert not panel._drag_update_timer.isActive()
 
 
-def test_fixed_backdrop_skips_repeated_capture(monkeypatch, tmp_path):
-    """live_glass=False 且已有背景时，_refresh_backdrop 不调用 capture_screen。"""
+def test_white_mode_skips_capture(monkeypatch, tmp_path):
+    """白色模式下 _refresh_backdrop 不调用 capture_screen。"""
     from app.core.config import DeviceRegistry, SettingsStore
     from app.core.monitor import Monitor
+    from app.ui import backdrop
     from app.ui.panel import Panel
     from app.ui.tray import TrayController
-    from app.ui import backdrop
 
     registry = DeviceRegistry(user_dir=tmp_path)
     store = SettingsStore(registry, path=tmp_path / "preferences.json")
-    store.prefs.live_glass = False
+    store.prefs.background_mode = BACKGROUND_WHITE
+    monitor = Monitor(registry, store.prefs)
+    tray = TrayController(registry, store)
+
+    panel = Panel(registry, store, monitor, tray)
+
+    captured = []
+    monkeypatch.setattr(backdrop, "capture_screen", lambda *args, **kwargs: captured.append(1) or None)
+
+    panel._refresh_backdrop()
+    assert captured == []
+    assert panel.store.prefs.background_mode == BACKGROUND_WHITE
+
+
+def test_live_glass_skips_repeated_capture(monkeypatch, tmp_path):
+    """柔光玻璃已取到背景后，_refresh_backdrop 不再重复截屏。"""
+    from app.core.config import DeviceRegistry, SettingsStore
+    from app.core.monitor import Monitor
+    from app.ui import backdrop
+    from app.ui.panel import Panel
+    from app.ui.tray import TrayController
+
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    store.prefs.background_mode = BACKGROUND_LIVE_GLASS
     monitor = Monitor(registry, store.prefs)
     tray = TrayController(registry, store)
 
