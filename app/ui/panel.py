@@ -505,6 +505,8 @@ class Panel(QWidget):
         for cfg in self.registry.enabled_devices():
             card = self._cards.get(cfg.id)
             if card:
+                # 改名立即生效：卡片标题跟随设置页，不用等卡片重建
+                card.set_display_name(cfg.display_name)
                 card.set_color(self.store.prefs.color_for_device(cfg))
                 card.set_style(self.store.prefs.style_for_device(cfg))
         self.shell.setFixedSize(self.shell.width(), self.shell.height())
