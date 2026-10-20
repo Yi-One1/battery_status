@@ -138,6 +138,7 @@ def test_tray_icon_order_matches_panel_order(qapp, tmp_path, monkeypatch):
     from app.ui.tray import TrayController
 
     # 离屏环境里创建/析构 QSystemTrayIcon 会段错误，用哑元替身
+    from PySide6.QtWidgets import QApplication
     from PySide6.QtCore import QObject, Signal as QtSignal
 
     created: list["_FakeTrayIcon"] = []
@@ -170,6 +171,7 @@ def test_tray_icon_order_matches_panel_order(qapp, tmp_path, monkeypatch):
             self.tooltips.append(text)
 
     monkeypatch.setattr(tray_module, "QSystemTrayIcon", _FakeTrayIcon)
+    monkeypatch.setattr(tray_module, "SWAP_DELAY_MS", 0)
 
     registry = DeviceRegistry(user_dir=tmp_path)
     store = SettingsStore(registry, path=tmp_path / "preferences.json")
@@ -182,6 +184,7 @@ def test_tray_icon_order_matches_panel_order(qapp, tmp_path, monkeypatch):
         for device_id in ids
     }
     tray.update_snapshots(snapshots)
+    qapp.processEvents()  # 延迟重建在下一轮事件循环创建图标
 
     assert [d.id for d in tray._visible] == list(reversed(ids))
     assert len(tray._icons) == len(ids)
@@ -190,10 +193,12 @@ def test_tray_icon_order_matches_panel_order(qapp, tmp_path, monkeypatch):
     # 相同序列再来一轮：图标不重建（槽位稳定，不被轻易打乱）
     created_count = len(created)
     tray.update_snapshots(snapshots)
+    qapp.processEvents()
     assert len(created) == created_count
 
     # 设备重排：id 序列变化 → 图标按新顺序重建
     store.prefs.device_order = ids
     tray.update_snapshots(snapshots)
+    qapp.processEvents()
     assert tray._icon_ids == ids
     assert len(created) == created_count + len(ids)

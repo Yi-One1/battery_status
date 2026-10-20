@@ -14,10 +14,12 @@ def _ensure_qapp():
 
 
 def _install_fake_tray(monkeypatch) -> list:
-    """离屏环境替身：记录创建的托盘图标及其图标/提示文本。"""
+    """离屏环境替身：记录创建的托盘图标及其图标/提示文本，并把换血间隔归零。"""
     from PySide6.QtCore import QObject, Signal as QtSignal
 
     from app.ui import tray as tray_module
+
+    monkeypatch.setattr(tray_module, "SWAP_DELAY_MS", 0)
 
     created: list = []
 
@@ -202,6 +204,7 @@ def test_tray_placeholder_icon_when_no_devices(qapp, tmp_path, monkeypatch):
     tray = TrayController(registry, store)
 
     tray.update_snapshots({})
+    qapp.processEvents()  # 延迟重建：注销旧图标后下一轮事件循环才创建新图标
     assert len(tray._icons) == 1
     assert tray._icons[0].tooltips[-1] == "外设电量 · 未检测到设备"
     assert tray._icon_ids == []
@@ -211,6 +214,7 @@ def test_tray_placeholder_icon_when_no_devices(qapp, tmp_path, monkeypatch):
     tray.update_snapshots(
         {device_id: Snapshot(device_id=device_id, level=80, charging=False, online=True)}
     )
+    qapp.processEvents()
     assert len(tray._icons) == 1
     assert tray._icon_ids == [device_id]
 
@@ -233,6 +237,7 @@ def test_tray_per_device_independent_icons(qapp, tmp_path, monkeypatch):
         for device_id in ids
     }
     tray.update_snapshots(snapshots)
+    qapp.processEvents()
 
     assert len(tray._icons) == len(ids)
     assert tray._icon_ids == ids
@@ -260,6 +265,7 @@ def test_tray_hidden_device_gets_no_icon(qapp, tmp_path, monkeypatch):
         for device_id in ids
     }
     tray.update_snapshots(snapshots)
+    qapp.processEvents()
 
     assert tray._icon_ids == ids[1:]
     assert ids[0] not in [d.id for d in tray._visible]
@@ -283,6 +289,7 @@ def test_tray_all_hidden_falls_back_to_placeholder(qapp, tmp_path, monkeypatch):
         for device_id in ids
     }
     tray.update_snapshots(snapshots)
+    qapp.processEvents()
 
     assert len(tray._icons) == 1
     assert tray._icons[0].tooltips[-1] == "外设电量 · 未检测到设备"

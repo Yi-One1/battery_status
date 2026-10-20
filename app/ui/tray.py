@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -21,6 +21,9 @@ from . import theme
 log = logging.getLogger(__name__)
 
 ICON_SIZES = (16, 18, 20, 24, 32, 40, 48, 64)
+# 整组换血间隔：旧图标注销与新图标注册之间留的间隙（毫秒），
+# 让资源管理器彻底释放旧槽位；测试里会被改成 0。
+SWAP_DELAY_MS = 250
 
 
 def _bolt(center: QPointF, size: float) -> QPainterPath:
@@ -144,9 +147,18 @@ class TrayController(QObject):
         self.registry = registry
         self.store = store
         self._icons: list[QSystemTrayIcon] = []
-        # 图标对应的设备 id 序列。Windows 按创建顺序分配托盘槽位，
+        # 图标对应的设备 id 序列。Windows 按创建（注册）顺序分配托盘槽位，
         # 只换图不重建的话，槽位顺序不会跟随设备重排 —— 所以序列变化必须重建。
         self._icon_ids: list[str] = []
+        # 整组换血：注销旧图标与新图标注册分两轮（间隔 SWAP_DELAY_MS），
+        # 给资源管理器留出释放旧槽位的时间，否则同轮注销+注册的槽位顺序会错乱。
+        self._pending_ids: Optional[list[str]] = None
+        self._swap_old_icons: list[QSystemTrayIcon] = []
+        self._queued_renders: Optional[list[tuple[object, str]]] = None
+        self._swap_timer = QTimer(self)
+        self._swap_timer.setSingleShot(True)
+        self._swap_timer.setInterval(SWAP_DELAY_MS)
+        self._swap_timer.timeout.connect(self._do_swap)
         self._snapshots: dict[str, Snapshot] = {}
         self._menu = QMenu()
         self._menu.aboutToShow.connect(self._populate_menu)
@@ -156,20 +168,74 @@ class TrayController(QObject):
     def _ensure_icons(self, count: int, ids: Optional[list[str]] = None) -> None:
         count = max(1, count)
         wanted_ids = [str(x) for x in (ids or [])]
-        if len(self._icons) == count and self._icon_ids == wanted_ids:
+        if self._pending_ids is not None:
+            if self._pending_ids == wanted_ids:
+                return  # 已安排同目标重建，等换血定时器执行
+        elif len(self._icons) == count and self._icon_ids == wanted_ids:
             return
-        for icon in self._icons:
-            icon.hide()
-            icon.deleteLater()
-        self._icons = []
-        # merged 模式不关心设备序列（ids 为 None），清空即可
-        self._icon_ids = wanted_ids if ids is not None else []
-        for _ in range(count):
+
+        if ids is None:
+            # 占位图标：单枚、无顺序可言，立即注销全部并直接创建
+            self._pending_ids = None
+            self._queued_renders = None
+            self._teardown(self._icons)
+            self._teardown(self._swap_old_icons)
+            self._swap_old_icons = []
+            self._swap_timer.stop()
             tray = QSystemTrayIcon(self._menu)
             tray.setContextMenu(self._menu)
             tray.activated.connect(self._on_activated)
             tray.show()
-            self._icons.append(tray)
+            self._icons = [tray]
+            self._icon_ids = []
+            return
+
+        if self._pending_ids is None:
+            # 重建开始：旧图标先留着显示（不闪烁），到点整组注销、按新序重建
+            self._swap_old_icons = list(self._icons)
+            self._icons = []
+            self._icon_ids = []
+        # 若重建途中目标序列又变了：只更新目标，待注销列表保持原样
+        self._pending_ids = wanted_ids
+        self._swap_timer.start()
+
+    def _do_swap(self) -> None:
+        if self._pending_ids is None:
+            return
+        self._teardown(self._swap_old_icons)
+        self._swap_old_icons = []
+        ids = self._pending_ids
+        self._pending_ids = None
+        self._create_icons(ids)
+
+    def _teardown(self, icons: list) -> None:
+        for icon in icons:
+            icon.hide()
+            icon.deleteLater()
+
+    def _create_icons(self, ids: list[str]) -> None:
+        icons: list[QSystemTrayIcon] = []
+        for _ in ids:
+            tray = QSystemTrayIcon(self._menu)
+            tray.setContextMenu(self._menu)
+            tray.activated.connect(self._on_activated)
+            tray.show()
+            icons.append(tray)
+        self._icons = icons
+        self._icon_ids = list(ids)
+        queued = self._queued_renders
+        self._queued_renders = None
+        if queued and len(queued) == len(icons):
+            self._apply_renders(queued)
+
+    def _apply_renders(self, renders: list[tuple[object, str]]) -> None:
+        """把 (图标, 提示) 应用到当前图标组；换血期间先入队，换血完成后补上。"""
+        if self._pending_ids is not None:
+            self._queued_renders = renders
+            return
+        for icon, (qicon, tooltip) in zip(self._icons, renders):
+            icon.setIcon(qicon)
+            icon.setToolTip(tooltip)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         # 单击固定为「切换主面板」，且面板打开时总落在电量显示页（Panel.show_panel 负责）；
@@ -192,23 +258,25 @@ class TrayController(QObject):
         if not devices:
             # 一台可见设备都没有：保留一枚灰色占位图标，应用仍能从托盘打开
             self._ensure_icons(1)
-            self._icons[0].setIcon(battery_icon(None, theme.ACCENT_BLUE, offline=True))
-            self._icons[0].setToolTip("外设电量 · 未检测到设备")
+            self._apply_renders([(battery_icon(None, theme.ACCENT_BLUE, offline=True), "外设电量 · 未检测到设备")])
             return
 
-        # 传入 id 序列：顺序变化时重建图标，让 Windows 槽位跟着主界面重排
-        self._ensure_icons(len(devices), [d.id for d in devices])
-        lines = []
-        for index, cfg in enumerate(devices):
+        renders: list[tuple[object, str]] = []
+        for cfg in devices:
             snap = snapshots[cfg.id]
-            color = prefs.color_for_device(cfg)
-            self._icons[index].setIcon(
+            renders.append((
                 battery_icon(
-                    snap.display_level, color, bool(snap.display_charging), show_percent, not snap.online
-                )
-            )
-            self._icons[index].setToolTip(self._device_line(cfg.display_name, snap))
-            lines.append(self._device_line(cfg.display_name, snap))
+                    snap.display_level,
+                    prefs.color_for_device(cfg),
+                    bool(snap.display_charging),
+                    show_percent,
+                    not snap.online,
+                ),
+                self._device_line(cfg.display_name, snap),
+            ))
+        # 传入 id 序列：顺序变化时整组换血，让 Windows 槽位跟着主界面重排
+        self._ensure_icons(len(devices), [d.id for d in devices])
+        self._apply_renders(renders)
 
     def _device_line(self, name: str, snap: Snapshot) -> str:
         level = "--" if snap.display_level is None else f"{snap.display_level}%"
@@ -275,6 +343,11 @@ class TrayController(QObject):
         self._icons[0].showMessage(title, message, QSystemTrayIcon.MessageIcon.Information, 6000)
 
     def shutdown(self) -> None:
-        for icon in self._icons:
-            icon.hide()
+        self._swap_timer.stop()
+        self._pending_ids = None
+        self._queued_renders = None
+        self._teardown(self._icons)
+        self._teardown(self._swap_old_icons)
         self._icons = []
+        self._swap_old_icons = []
+        self._icon_ids = []
