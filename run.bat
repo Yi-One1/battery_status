@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-rem 外设电量 launcher: creates a local venv on first run, then starts silently in tray.
+rem 设备电量显示 launcher: creates a local venv on first run, then starts silently in tray.
 set "PYEXE=.venv\Scripts\python.exe"
 set "PYW=.venv\Scripts\pythonw.exe"
 

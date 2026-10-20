@@ -119,7 +119,7 @@ class Panel(QWidget):
     # ------------------------------------------------------------------ 构建
     def _build(self) -> None:
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setWindowTitle("外设电量")
+        self.setWindowTitle("设备电量显示")
         icon_path = resource_root() / "app" / "assets" / "app.ico"
         if icon_path.exists():
             from PySide6.QtGui import QIcon

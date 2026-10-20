@@ -1,4 +1,4 @@
-"""外设电量 · 入口。
+"""设备电量显示 · 入口。
 
 用法：
     python main.py            # 启动并弹出面板
@@ -126,7 +126,7 @@ def main() -> int:
 
     start_hidden = args.tray or (store.prefs.start_minimized and store.prefs.autostart)
     if start_hidden:
-        QTimer.singleShot(300, lambda: tray.notify("外设电量已在托盘运行", "左键单击托盘图标即可查看各设备电量。"))
+        QTimer.singleShot(300, lambda: tray.notify("设备电量显示已在托盘运行", "左键单击托盘图标即可查看各设备电量。"))
     else:
         QTimer.singleShot(120, panel.show_panel)
 

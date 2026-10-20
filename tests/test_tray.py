@@ -206,7 +206,7 @@ def test_tray_placeholder_icon_when_no_devices(qapp, tmp_path, monkeypatch):
     tray.update_snapshots({})
     qapp.processEvents()  # 延迟重建：注销旧图标后下一轮事件循环才创建新图标
     assert len(tray._icons) == 1
-    assert tray._icons[0].tooltips[-1] == "外设电量 · 未检测到设备"
+    assert tray._icons[0].tooltips[-1] == "设备电量显示 · 未检测到设备"
     assert tray._icon_ids == []
 
     # 设备恢复后占位图标让位给独立图标
@@ -292,5 +292,5 @@ def test_tray_all_hidden_falls_back_to_placeholder(qapp, tmp_path, monkeypatch):
     qapp.processEvents()
 
     assert len(tray._icons) == 1
-    assert tray._icons[0].tooltips[-1] == "外设电量 · 未检测到设备"
+    assert tray._icons[0].tooltips[-1] == "设备电量显示 · 未检测到设备"
     assert tray._icon_ids == []

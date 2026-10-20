@@ -258,7 +258,7 @@ class TrayController(QObject):
         if not devices:
             # 一台可见设备都没有：保留一枚灰色占位图标，应用仍能从托盘打开
             self._ensure_icons(1)
-            self._apply_renders([(battery_icon(None, theme.ACCENT_BLUE, offline=True), "外设电量 · 未检测到设备")])
+            self._apply_renders([(battery_icon(None, theme.ACCENT_BLUE, offline=True), "设备电量显示 · 未检测到设备")])
             return
 
         renders: list[tuple[object, str]] = []
@@ -288,7 +288,7 @@ class TrayController(QObject):
             snap = self._snapshots.get(cfg.id)
             if snap:
                 lines.append(self._device_line(cfg.display_name, snap))
-        return "\n".join(lines) or "外设电量"
+        return "\n".join(lines) or "设备电量显示"
 
     # -- 菜单 ---------------------------------------------------------------
     def _populate_menu(self) -> None:

@@ -1,6 +1,6 @@
 """打包成免安装 exe（PyInstaller）。
 
-    python tools/build_exe.py                # 单文件 exe，输出 dist/外设电量.exe
+    python tools/build_exe.py                # 单文件 exe，输出 dist/设备电量显示.exe
     python tools/build_exe.py --onedir       # 目录版，冷启动更快
     python tools/build_exe.py --name MyName  # 自定义可执行文件名
 
@@ -19,8 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="打包外设电量")
-    parser.add_argument("--name", default="外设电量")
+    parser = argparse.ArgumentParser(description="打包设备电量显示")
+    parser.add_argument("--name", default="设备电量显示")
     parser.add_argument("--onedir", action="store_true", help="生成目录版而不是单文件")
     parser.add_argument("--keep-build", action="store_true", help="保留 build 中间目录")
     args = parser.parse_args()

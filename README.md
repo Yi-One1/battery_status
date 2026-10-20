@@ -1,4 +1,4 @@
-# 外设电量 · PeripheralBattery
+# 设备电量显示 · PeripheralBattery
 
 Windows 桌面端 2.4G 无线外设电量监测工具。常驻托盘，实时显示飞智冰原狼 4、迈从 G98 PRO、
 罗技 GPW2、漫步者 G3 MAX 的电量与状态；界面为澎湃 OS 4 式**柔光玻璃**（会透出壁纸并跟着变色）；
@@ -361,7 +361,7 @@ run.bat
 
 :: 3) 打包成 exe
 .venv\Scripts\python.exe -m pip install pyinstaller
-.venv\Scripts\python.exe tools\build_exe.py            :: 单文件 dist\外设电量.exe
+.venv\Scripts\python.exe tools\build_exe.py            :: 单文件 dist\设备电量显示.exe
 .venv\Scripts\python.exe tools\build_exe.py --onedir   :: 目录版，冷启动更快
 ```
 

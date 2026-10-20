@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "BatteryGlass"
-APP_DISPLAY_NAME = "外设电量"
+APP_DISPLAY_NAME = "设备电量显示"
 
 
 def is_frozen() -> bool:
