@@ -690,6 +690,13 @@ def _read_vendor_feature(
         if data:
             reading = _build_reading_from_parsed(data, channel, info, "厂商 Feature")
             if reading.ok or reading.offline:
+                # 有些有线通道（如迈从 441）只要插着线就由 USB 供电，固件不给充电位，
+                # 只能在配置里显式声明 charging: true。解析成功时也要把它落到 Reading 上，
+                # 否则 snapshot.charging 一直是 None：界面靠 display_charging 的 50% 兜底
+                # 看着对，但 cards.py 的低电量告警用的是原始 charging，会误报低电量。
+                # 只对显式配置 charging 的通道生效，未配置的通道保持 None（不猜）。
+                if reading.ok and reading.charging is None and channel.get("charging"):
+                    reading.charging = True
                 return reading
         # 有些通道只是用来确认设备在线，不保证能解析出电量；
         # 只要能打开对应 HID 接口就认为设备存在，读不到电量也返回 detected。

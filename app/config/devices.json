@@ -135,7 +135,7 @@
             "reply_prefix": "13 4A 01 00 02",
             "level_offset": 5,
             "charging_byte": 6,
-            "charging_bit": 0,
+            "charging_bit": 4,
             "timeout_ms": 400,
             "retries": 2,
             "link": "wireless"
@@ -160,7 +160,7 @@
       "options": {
         "demo_level": 64
       },
-      "notes": "2.4G 接收器 PID=0x01BB(443)，有线模式 PID=0x01B9(441)。无线通道：0xFF02/0x02 的 20 字节 output/input，写 13 4A 01 00 02 00（sum8 校验）→ 收 13 4A 01 00 02 <电量> <状态> …，byte5=电量；byte6 bit0 为充电标志（0x01=充电中）。有线通道：0xFF02/0x01 的 feature report 0x09（10 字节），读回 09 87 … <电量> …，byte8=电量；实测有线模式稳定返回当前电量。注意 dongle 会把不认识的命令原样回显，回显帧必须排掉否则电量位为 0 会读成 0%。"
+      "notes": "2.4G 接收器 PID=0x01BB(443)，有线模式 PID=0x01B9(441)。无线通道：0xFF02/0x02 的 20 字节 output/input，写 13 4A 01 00 02 00（sum8 校验）→ 收 13 4A 01 00 02 <电量> <状态> …，byte5=电量；byte6 bit4 为充电标志（0x10=充电中，未充电为 0x00）。有线通道：0xFF02/0x01 的 feature report 0x09（10 字节），读回 09 87 … <电量> … <状态>，byte8=电量、byte9 bit4 同上；实测有线模式充电时 byte8 也是 50 占位符。注意 dongle 会把不认识的命令原样回显，回显帧必须排掉否则电量位为 0 会读成 0%。充电时固件固定把电量位报成 50% 占位、不给真实电量（2026-10-22 真机复测：2.4G 充电帧 13 4A 01 00 02 32 10 … A2、有线 09 87 00 00 01 00 02 00 32 10），由 model.py 的 display_level 判为占位符 → 只显示闪电不显示百分比。"
     },
     {
       "id": "edifier-g3max",

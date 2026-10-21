@@ -273,20 +273,20 @@ def test_mchose_real_unplugged_reply_is_not_charging():
         prefix=bytes([0x13, 0x4A, 0x01, 0x00, 0x02]),
         level_offset=5,
         charging_byte=6,
-        charging_bit=0,
+        charging_bit=4,
     )
     assert result == (83, False)
 
 
 def test_mchose_real_charging_reply_sets_charging_flag():
     frame = bytearray(MCHOSE_REAL_REPLY_UNPLUGGED)
-    frame[6] = 0x01
+    frame[6] = 0x10
     result = parse_vendor_reply(
         bytes(frame),
         prefix=bytes([0x13, 0x4A, 0x01, 0x00, 0x02]),
         level_offset=5,
         charging_byte=6,
-        charging_bit=0,
+        charging_bit=4,
     )
     assert result == (83, True)
 
@@ -401,8 +401,8 @@ def test_mchose_config_wires_the_query_channels():
     assert wireless["reply_prefix"] == "13 4A 01 00 02"
     assert wireless["level_offset"] == 5
     assert wireless["charging_byte"] == 6
-    assert wireless["charging_bit"] == 0
-    # byte6 bit0 是正向语义（0x01=充电中），绝不能取反，否则未充电会被误报成充电中。
+    assert wireless["charging_bit"] == 4
+    # byte6 bit4 是正向语义（0x10=充电中），绝不能取反，否则未充电会被误报成充电中。
     assert wireless.get("charging_invert", False) is False
     assert wireless["link"] == "wireless"
 
@@ -621,6 +621,9 @@ def _mchose_wired_cfg() -> DeviceConfig:
                     "reply_prefix": "09 87",
                     "level_offset": 8,
                     "link": "wired",
+                    # 与 app/config/devices.json 一致：插线即由 USB 供电，固件不给充电位，
+                    # 只能靠这条显式声明让 reading.charging 变成 True。
+                    "charging": True,
                 },
             ],
         },
@@ -645,9 +648,26 @@ def test_wired_feature_channel_reads_battery(monkeypatch):
 
     assert reading.ok is True
     assert reading.level == 50
+    # 通道写了 charging: true，解析成功这条路径也必须把它落到 Reading 上，
+    # 否则 cards.py 的低电量告警（用原始 charging）会误报。
+    assert reading.charging is True
     assert reading.link == "wired"
     assert reading.source == "vendor-query"
     assert handle.written_features == []  # 有线通道不需要先发命令
+
+
+def test_wired_feature_channel_without_charging_flag_leaves_it_unknown(monkeypatch):
+    """没写 charging 的通道不许被顺手置 True —— 拿不到就返回 None，不猜。"""
+    cfg = _mchose_wired_cfg()
+    for channel in cfg.protocol["channels"]:
+        channel.pop("charging", None)
+    _patch_feature(monkeypatch, {9: MCHOSE_WIRED_FEATURE})
+
+    reading = read_vendor_query(cfg, _mchose_wired_info())
+
+    assert reading.ok is True
+    assert reading.level == 50
+    assert reading.charging is None
 
 
 def test_channel_selects_correct_strategy_by_match(monkeypatch):
@@ -659,6 +679,8 @@ def test_channel_selects_correct_strategy_by_match(monkeypatch):
     reading = read_vendor_query(cfg, mchose_info())
     assert reading.ok is True
     assert reading.level == 100
+    # 无线通道没配 charging：不能被有线通道的 charging: true 串味
+    assert reading.charging is None
     assert reading.link == "wireless"
     assert handle.written == [MCHOSE_QUERY]
 
@@ -667,5 +689,6 @@ def test_channel_selects_correct_strategy_by_match(monkeypatch):
     reading = read_vendor_query(cfg, _mchose_wired_info())
     assert reading.ok is True
     assert reading.level == 50
+    assert reading.charging is True
     assert reading.link == "wired"
     assert handle.written_features == []
