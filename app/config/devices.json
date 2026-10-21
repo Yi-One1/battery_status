@@ -136,7 +136,6 @@
             "level_offset": 5,
             "charging_byte": 6,
             "charging_bit": 0,
-            "charging_invert": true,
             "timeout_ms": 400,
             "retries": 2,
             "link": "wireless"

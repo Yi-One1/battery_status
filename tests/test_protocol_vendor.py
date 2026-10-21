@@ -259,6 +259,38 @@ def test_mchose_reply_rejects_a_different_sub_type():
     )
 
 
+# 真实抓包（2.4G 接收器：vid=0x258A, pid=0x01BB，未插线）：
+# 写 13 4A 01 00 02 00（sum8）→ 收 13 4A 01 00 02 53 00 … B3
+# byte5=0x53=83%，byte6=0x00 表示未充电。回归点：这里曾被 charging_invert 取反成「充电中」。
+MCHOSE_REAL_REPLY_UNPLUGGED = bytes(
+    [0x13, 0x4A, 0x01, 0x00, 0x02, 0x53, 0x00] + [0x00] * 12 + [0xB3]
+)
+
+
+def test_mchose_real_unplugged_reply_is_not_charging():
+    result = parse_vendor_reply(
+        MCHOSE_REAL_REPLY_UNPLUGGED,
+        prefix=bytes([0x13, 0x4A, 0x01, 0x00, 0x02]),
+        level_offset=5,
+        charging_byte=6,
+        charging_bit=0,
+    )
+    assert result == (83, False)
+
+
+def test_mchose_real_charging_reply_sets_charging_flag():
+    frame = bytearray(MCHOSE_REAL_REPLY_UNPLUGGED)
+    frame[6] = 0x01
+    result = parse_vendor_reply(
+        bytes(frame),
+        prefix=bytes([0x13, 0x4A, 0x01, 0x00, 0x02]),
+        level_offset=5,
+        charging_byte=6,
+        charging_bit=0,
+    )
+    assert result == (83, True)
+
+
 # --------------------------------------------------------------------------- #
 # 主动查询的交互过程：回显必须排掉
 # --------------------------------------------------------------------------- #
@@ -370,7 +402,8 @@ def test_mchose_config_wires_the_query_channels():
     assert wireless["level_offset"] == 5
     assert wireless["charging_byte"] == 6
     assert wireless["charging_bit"] == 0
-    assert wireless["charging_invert"] is True
+    # byte6 bit0 是正向语义（0x01=充电中），绝不能取反，否则未充电会被误报成充电中。
+    assert wireless.get("charging_invert", False) is False
     assert wireless["link"] == "wireless"
 
     wired = proto["channels"][1]
