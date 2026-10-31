@@ -35,7 +35,10 @@ SOURCE_AUTO = "auto"
 
 USER_SCHEMA_VERSION = "1"
 
-DEFAULT_OFFLINE_HIDE_MINUTES = 10
+DEFAULT_OFFLINE_HIDE_SECONDS = 600
+# 「断连多久后收起」可选范围：1 秒 ~ 1 小时（内部统一按秒存）
+MIN_OFFLINE_HIDE_SECONDS = 1
+MAX_OFFLINE_HIDE_SECONDS = 3600
 
 # 背景模式
 BACKGROUND_LIVE_GLASS = "live_glass"
@@ -509,7 +512,7 @@ class Preferences:
     # 玻璃效果：live_glass（柔光玻璃）/ white（纯白色）
     background_mode: str = BACKGROUND_LIVE_GLASS
     auto_hide_offline: bool = True
-    offline_hide_minutes: int = DEFAULT_OFFLINE_HIDE_MINUTES
+    offline_hide_seconds: int = DEFAULT_OFFLINE_HIDE_SECONDS
 
     # -- 序列化 -------------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
@@ -542,7 +545,15 @@ class Preferences:
             prefs.background_mode = BACKGROUND_LIVE_GLASS
         prefs.refresh_seconds = max(10, min(600, prefs.refresh_seconds))
         prefs.low_battery_threshold = max(0, min(90, prefs.low_battery_threshold))
-        prefs.offline_hide_minutes = max(1, min(720, prefs.offline_hide_minutes))
+        # 旧字段 offline_hide_minutes（分钟，最小 1 分钟）迁移到 offline_hide_seconds
+        if "offline_hide_seconds" not in (raw or {}) and "offline_hide_minutes" in (raw or {}):
+            try:
+                prefs.offline_hide_seconds = int(raw["offline_hide_minutes"]) * 60
+            except (TypeError, ValueError):
+                pass
+        prefs.offline_hide_seconds = max(
+            MIN_OFFLINE_HIDE_SECONDS, min(MAX_OFFLINE_HIDE_SECONDS, prefs.offline_hide_seconds)
+        )
         prefs.sanitize_types(registry)
         prefs.sanitize_devices()
         return prefs

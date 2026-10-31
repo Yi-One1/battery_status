@@ -7,13 +7,16 @@ from typing import Callable, Optional
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QColorDialog,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -22,6 +25,8 @@ from ..core import autostart
 from ..core.config import (
     BACKGROUND_LIVE_GLASS,
     BACKGROUND_WHITE,
+    MAX_OFFLINE_HIDE_SECONDS,
+    MIN_OFFLINE_HIDE_SECONDS,
     DeviceConfig,
     DeviceRegistry,
     SettingsStore,
@@ -37,8 +42,9 @@ log = logging.getLogger(__name__)
 
 STYLE_OPTIONS = [("ring", "环形"), ("bar", "条状"), ("number", "数字")]
 
-# 自动收起断连设备的可选时长（分钟）
-OFFLINE_OPTIONS = [("5", "5 分钟"), ("10", "10 分钟"), ("30", "30 分钟"), ("60", "1 小时")]
+# 断连收起的单位与常用档位（值一律是「秒」）
+OFFLINE_UNITS = [("1", "秒"), ("60", "分钟"), ("3600", "小时")]
+OFFLINE_PRESETS = [("300", "5 分钟"), ("600", "10 分钟"), ("1800", "30 分钟"), ("3600", "1 小时")]
 
 SOURCE_LABELS = {"builtin": "内置", "user": "手动添加", "auto": "自动发现"}
 
@@ -76,6 +82,101 @@ class SettingRow(QWidget):
         layout.addLayout(text_box, 1)
         if control is not None:
             layout.addWidget(control, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+
+class OfflineHidePicker(QWidget):
+    """「断连多久后收起」：数值输入 + 单位切换 + 常用档位。
+
+    内部一律按秒存（1 秒 ~ 1 小时）。回填时刻意挑「能整除的最大单位」，
+    不会出现 90 秒被显示成 1.5 分钟这种精度丢失。
+    """
+
+    changed = Signal(int)  # 秒
+
+    def __init__(self, seconds: int, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._seconds = self._clamp(seconds)
+        self._syncing = False
+        self.setFixedWidth(202)
+
+        self.spin = QSpinBox()
+        self.spin.setRange(1, MAX_OFFLINE_HIDE_SECONDS)
+        self.spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.spin.setFont(theme.font(12.0, 500))
+        self.spin.setFixedWidth(78)
+        self.spin.setToolTip("1 秒 ~ 1 小时")
+        self.spin.setKeyboardTracking(False)
+
+        self.unit = QComboBox()
+        for key, label in OFFLINE_UNITS:
+            self.unit.addItem(label, int(key))
+        self.unit.setFont(theme.font(12.0, 500))
+        self.unit.setFixedWidth(58)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(6)
+        top.addWidget(self.spin)
+        top.addWidget(self.unit)
+        top.addStretch(1)
+
+        self.presets = SegmentedControl(OFFLINE_PRESETS, height=22)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+        layout.addLayout(top)
+        layout.addWidget(self.presets)
+
+        self.spin.valueChanged.connect(self._on_spin)
+        self.unit.currentIndexChanged.connect(self._on_unit)
+        self.presets.changed.connect(self._on_preset)
+        self._show(self._seconds)
+
+    @staticmethod
+    def _clamp(seconds: int) -> int:
+        return max(MIN_OFFLINE_HIDE_SECONDS, min(MAX_OFFLINE_HIDE_SECONDS, int(seconds)))
+
+    def value(self) -> int:
+        return self._seconds
+
+    def _show(self, seconds: int) -> None:
+        seconds = self._clamp(seconds)
+        factor, index = 1, 0
+        for i, (key, _) in enumerate(OFFLINE_UNITS):
+            value = int(key)
+            if seconds % value == 0:
+                factor, index = value, i
+        self._syncing = True
+        self.spin.setValue(max(1, seconds // factor))
+        self.unit.setCurrentIndex(index)
+        self._syncing = False
+        self._seconds = seconds
+        self.presets.set_value(str(seconds))
+
+    def _on_spin(self, value: int) -> None:
+        if self._syncing:
+            return
+        self._commit(value * int(self.unit.currentData()))
+
+    def _on_unit(self, index: int) -> None:
+        if self._syncing:
+            return
+        # 换单位只换换算基准，时长本身不变（600 秒 →「分钟」显示 10）
+        self._commit(self.spin.value() * int(self.unit.currentData()))
+
+    def _on_preset(self, key: str) -> None:
+        if self._syncing:
+            return
+        self._commit(int(key))
+
+    def _commit(self, seconds: int) -> None:
+        seconds = self._clamp(seconds)
+        changed = seconds != self._seconds
+        self._show(seconds)
+        if changed:
+            self.changed.emit(seconds)
 
 
 class SettingsPane(QWidget):
@@ -138,11 +239,14 @@ class SettingsPane(QWidget):
         self.auto_hide_toggle.toggled.connect(self._on_auto_hide)
         column.addWidget(SettingRow("自动收起断连设备", "断开超过设定时长就不再占位，重新连上会自动回来", self.auto_hide_toggle))
 
-        self.offline_picker = SegmentedControl(OFFLINE_OPTIONS, height=24)
-        self.offline_picker.setFixedWidth(202)
-        self.offline_picker.set_value(self._offline_key(store.prefs.offline_hide_minutes))
-        self.offline_picker.changed.connect(self._on_offline_minutes)
-        self._offline_row = SettingRow("断连多久后收起", "只影响显示，不会删除配置", self.offline_picker)
+        self.offline_picker = OfflineHidePicker(store.prefs.offline_hide_seconds)
+        self.offline_picker.setEnabled(store.prefs.auto_hide_offline)
+        self.offline_picker.changed.connect(self._on_offline_seconds)
+        self._offline_row = SettingRow(
+            "断连多久后收起",
+            "可填 1 秒 ~ 1 小时；只影响显示，不会删除配置",
+            self.offline_picker,
+        )
         column.addWidget(self._offline_row)
 
         column.addWidget(Divider())
@@ -516,12 +620,6 @@ class SettingsPane(QWidget):
         self._rebuild_device_rows()
         self.devices_changed.emit()
 
-    @staticmethod
-    def _offline_key(minutes: int) -> str:
-        options = [int(key) for key, _ in OFFLINE_OPTIONS]
-        nearest = min(options, key=lambda value: abs(value - int(minutes)))
-        return str(nearest)
-
     # -- 交互 ---------------------------------------------------------------
     def _on_auto_add(self, checked: bool) -> None:
         self.store.prefs.auto_add = checked
@@ -532,11 +630,12 @@ class SettingsPane(QWidget):
         self.offline_picker.setEnabled(checked)
         self._commit()
 
-    def _on_offline_minutes(self, value: str) -> None:
+    def _on_offline_seconds(self, seconds: int) -> None:
         try:
-            self.store.prefs.offline_hide_minutes = max(1, int(value))
+            value = int(seconds)
         except (TypeError, ValueError):
             return
+        self.store.prefs.offline_hide_seconds = max(MIN_OFFLINE_HIDE_SECONDS, min(MAX_OFFLINE_HIDE_SECONDS, value))
         self._commit()
 
     def _pick_color(self, key: str, swatch: ColorSwatch) -> None:

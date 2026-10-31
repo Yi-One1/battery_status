@@ -12,7 +12,7 @@ import json
 import pytest
 
 from app.core.config import (
-    DEFAULT_OFFLINE_HIDE_MINUTES,
+    DEFAULT_OFFLINE_HIDE_SECONDS,
     SOURCE_AUTO,
     SOURCE_BUILTIN,
     SOURCE_USER,
@@ -240,24 +240,41 @@ def test_preferences_auto_management_defaults():
     prefs = Preferences()
     assert prefs.auto_add is True
     assert prefs.auto_hide_offline is True
-    assert prefs.offline_hide_minutes == DEFAULT_OFFLINE_HIDE_MINUTES
+    assert prefs.offline_hide_seconds == DEFAULT_OFFLINE_HIDE_SECONDS
 
 
-def test_preferences_clamps_offline_minutes(registry):
-    prefs = Preferences.from_dict({"offline_hide_minutes": 99999}, registry)
-    assert prefs.offline_hide_minutes == 720
-    prefs = Preferences.from_dict({"offline_hide_minutes": -5}, registry)
-    assert prefs.offline_hide_minutes == 1
+def test_preferences_clamps_offline_seconds(registry):
+    """范围锁死在 1 秒 ~ 1 小时。"""
+    prefs = Preferences.from_dict({"offline_hide_seconds": 99999}, registry)
+    assert prefs.offline_hide_seconds == 3600
+    prefs = Preferences.from_dict({"offline_hide_seconds": -5}, registry)
+    assert prefs.offline_hide_seconds == 1
+    prefs = Preferences.from_dict({"offline_hide_seconds": 1}, registry)
+    assert prefs.offline_hide_seconds == 1
+
+
+def test_preferences_migrates_legacy_offline_minutes(registry):
+    """旧配置存的是分钟（offline_hide_minutes），升级后要按秒接上。"""
+    prefs = Preferences.from_dict({"offline_hide_minutes": 30}, registry)
+    assert prefs.offline_hide_seconds == 1800
+
+    # 新字段存在时以新字段为准，旧字段不再覆盖
+    prefs = Preferences.from_dict({"offline_hide_seconds": 5, "offline_hide_minutes": 30}, registry)
+    assert prefs.offline_hide_seconds == 5
+
+    # 旧字段超范围（老的 720 分钟上限）也要被夹到 1 小时
+    prefs = Preferences.from_dict({"offline_hide_minutes": 720}, registry)
+    assert prefs.offline_hide_seconds == 3600
 
 
 def test_preferences_bools_roundtrip(registry, tmp_path):
     store = SettingsStore(registry, path=tmp_path / "preferences.json")
     store.prefs.auto_add = False
     store.prefs.auto_hide_offline = False
-    store.prefs.offline_hide_minutes = 30
+    store.prefs.offline_hide_seconds = 1800
     store.save()
 
     again = SettingsStore(registry, path=tmp_path / "preferences.json")
     assert again.prefs.auto_add is False
     assert again.prefs.auto_hide_offline is False
-    assert again.prefs.offline_hide_minutes == 30
+    assert again.prefs.offline_hide_seconds == 1800

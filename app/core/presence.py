@@ -7,14 +7,14 @@
 三条判定依次短路：
   1. 还没扫到过（snapshots 里没有）→ 保留占位，避免界面刚起来时空一片；
   2. 在线 / 休眠 → 一定保留。休眠的鼠标仍然是连着的那只鼠标；
-  3. 离线 → 从 last_seen 起算，超过 offline_hide_minutes 才收起。
+  3. 离线 → 从 last_seen 起算，超过 offline_hide_seconds 才收起。
 """
 from __future__ import annotations
 
 import time
 from typing import Iterable, Optional
 
-from .config import DEFAULT_OFFLINE_HIDE_MINUTES, DeviceConfig, Preferences
+from .config import DEFAULT_OFFLINE_HIDE_SECONDS, DeviceConfig, Preferences
 from .model import Snapshot
 
 
@@ -31,22 +31,22 @@ def is_present(
     snapshot: Optional[Snapshot],
     *,
     now: Optional[float] = None,
-    hide_minutes: int = DEFAULT_OFFLINE_HIDE_MINUTES,
+    hide_seconds: int = DEFAULT_OFFLINE_HIDE_SECONDS,
 ) -> bool:
     """这台设备是否还应出现在界面上。"""
     if snapshot is None:
         return True
     if snapshot.online or snapshot.sleeping:
         return True
-    if hide_minutes <= 0:
+    if hide_seconds <= 0:
         return True
-    return offline_seconds(snapshot, now) < hide_minutes * 60
+    return offline_seconds(snapshot, now) < hide_seconds
 
 
-def effective_hide_minutes(prefs: Preferences) -> int:
+def effective_hide_seconds(prefs: Preferences) -> int:
     if not prefs.auto_hide_offline:
         return 0
-    return max(1, int(prefs.offline_hide_minutes))
+    return max(1, int(prefs.offline_hide_seconds))
 
 
 def filter_visible(
@@ -57,10 +57,10 @@ def filter_visible(
     now: Optional[float] = None,
 ) -> list[DeviceConfig]:
     """按「自动收起断连设备」规则过滤出要显示的设备。"""
-    minutes = effective_hide_minutes(prefs)
-    if minutes <= 0:
+    seconds = effective_hide_seconds(prefs)
+    if seconds <= 0:
         return [d for d in devices if d.enabled]
-    return [d for d in devices if d.enabled and is_present(snapshots.get(d.id), now=now, hide_minutes=minutes)]
+    return [d for d in devices if d.enabled and is_present(snapshots.get(d.id), now=now, hide_seconds=seconds)]
 
 
 def ordered_devices(devices: Iterable[DeviceConfig], prefs: Preferences) -> list[DeviceConfig]:
@@ -94,7 +94,7 @@ def hidden_devices(
     now: Optional[float] = None,
 ) -> list[DeviceConfig]:
     """被收起的那些设备，用于在页脚提示"另有 N 台已断开"。"""
-    minutes = effective_hide_minutes(prefs)
-    if minutes <= 0:
+    seconds = effective_hide_seconds(prefs)
+    if seconds <= 0:
         return []
-    return [d for d in devices if d.enabled and not is_present(snapshots.get(d.id), now=now, hide_minutes=minutes)]
+    return [d for d in devices if d.enabled and not is_present(snapshots.get(d.id), now=now, hide_seconds=seconds)]

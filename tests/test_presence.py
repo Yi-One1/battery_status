@@ -11,7 +11,7 @@ import pytest
 from app.core.config import DeviceConfig, DeviceRegistry, Preferences
 from app.core.model import Snapshot
 from app.core.presence import (
-    effective_hide_minutes,
+    effective_hide_seconds,
     filter_visible,
     hidden_devices,
     is_present,
@@ -54,44 +54,44 @@ def test_offline_seconds_never_seen_is_infinite():
 
 def test_online_device_always_present():
     old = snap("a", online=True, last_seen=NOW - 10 * 3600)
-    assert is_present(old, now=NOW, hide_minutes=10) is True
+    assert is_present(old, now=NOW, hide_seconds=600) is True
 
 
 def test_sleeping_device_always_present():
     """休眠的鼠标仍然是连着的那只鼠标，收起来用户就找不到它了。"""
     asleep = snap("a", online=True, last_seen=NOW - 10 * 3600, sleeping=True)
-    assert is_present(asleep, now=NOW, hide_minutes=10) is True
+    assert is_present(asleep, now=NOW, hide_seconds=600) is True
 
 
 def test_missing_snapshot_is_kept():
-    assert is_present(None, now=NOW, hide_minutes=10) is True
+    assert is_present(None, now=NOW, hide_seconds=600) is True
 
 
 def test_offline_within_window_is_kept():
-    assert is_present(snap("a", online=False, last_seen=NOW - 300), now=NOW, hide_minutes=10) is True
+    assert is_present(snap("a", online=False, last_seen=NOW - 300), now=NOW, hide_seconds=600) is True
 
 
 def test_offline_beyond_window_is_hidden():
-    assert is_present(snap("a", online=False, last_seen=NOW - 601), now=NOW, hide_minutes=10) is False
+    assert is_present(snap("a", online=False, last_seen=NOW - 601), now=NOW, hide_seconds=600) is False
 
 
 def test_boundary_hides_exactly_at_window():
     """窗口是"超过即收起"：599 秒还留着，到 600 秒整就收起。"""
-    assert is_present(snap("a", online=False, last_seen=NOW - 599), now=NOW, hide_minutes=10) is True
-    assert is_present(snap("a", online=False, last_seen=NOW - 600), now=NOW, hide_minutes=10) is False
-    assert is_present(snap("a", online=False, last_seen=NOW - 601), now=NOW, hide_minutes=10) is False
+    assert is_present(snap("a", online=False, last_seen=NOW - 599), now=NOW, hide_seconds=600) is True
+    assert is_present(snap("a", online=False, last_seen=NOW - 600), now=NOW, hide_seconds=600) is False
+    assert is_present(snap("a", online=False, last_seen=NOW - 601), now=NOW, hide_seconds=600) is False
 
 
 def test_zero_minutes_disables_hiding():
     ancient = snap("a", online=False, last_seen=NOW - 30 * 86400)
-    assert is_present(ancient, now=NOW, hide_minutes=0) is True
+    assert is_present(ancient, now=NOW, hide_seconds=0) is True
 
 
 # --------------------------------------------------------------------------- #
 # 集合过滤
 # --------------------------------------------------------------------------- #
 def test_filter_visible_mixed(prefs):
-    prefs.offline_hide_minutes = 10
+    prefs.offline_hide_seconds = 600
     devices = [device("live"), device("recent"), device("stale"), device("never")]
     snapshots = {
         "live": snap("live", online=True, last_seen=NOW - 9999),
@@ -117,14 +117,26 @@ def test_auto_hide_toggle_off_keeps_everything(prefs):
     snapshots = {"stale": snap("stale", online=False, last_seen=NOW - 99999)}
     assert filter_visible(devices, snapshots, prefs, now=NOW) == devices
     assert hidden_devices(devices, snapshots, prefs, now=NOW) == []
-    assert effective_hide_minutes(prefs) == 0
+    assert effective_hide_seconds(prefs) == 0
 
 
-def test_effective_hide_minutes_follows_prefs(prefs):
-    prefs.offline_hide_minutes = 30
-    assert effective_hide_minutes(prefs) == 30
+def test_effective_hide_seconds_follows_prefs(prefs):
+    prefs.offline_hide_seconds = 1800
+    assert effective_hide_seconds(prefs) == 1800
     prefs.auto_hide_offline = False
-    assert effective_hide_minutes(prefs) == 0
+    assert effective_hide_seconds(prefs) == 0
+
+
+def test_one_second_window_hides_immediately():
+    """下限 1 秒：断开满 1 秒就收起，半秒还留着。"""
+    assert is_present(snap("a", online=False, last_seen=NOW - 0.5), now=NOW, hide_seconds=1) is True
+    assert is_present(snap("a", online=False, last_seen=NOW - 1), now=NOW, hide_seconds=1) is False
+
+
+def test_one_hour_window_is_upper_bound():
+    """上限 1 小时：3599 秒还留着，3600 秒整收起。"""
+    assert is_present(snap("a", online=False, last_seen=NOW - 3599), now=NOW, hide_seconds=3600) is True
+    assert is_present(snap("a", online=False, last_seen=NOW - 3600), now=NOW, hide_seconds=3600) is False
 
 
 # --------------------------------------------------------------------------- #

@@ -88,12 +88,12 @@ def test_settings_auto_flags_persist(env, tmp_path):
     pane = SettingsPane(registry, store)
     pane.auto_add_toggle.setChecked(False)
     pane.auto_hide_toggle.setChecked(False)
-    pane.offline_picker.changed.emit("30")
+    pane.offline_picker.changed.emit(1800)
 
     saved = SettingsStore(registry, path=tmp_path / "preferences.json")
     assert saved.prefs.auto_add is False
     assert saved.prefs.auto_hide_offline is False
-    assert saved.prefs.offline_hide_minutes == 30
+    assert saved.prefs.offline_hide_seconds == 1800
 
 
 def test_settings_restore_button_disabled_until_something_removed(env):
@@ -302,7 +302,7 @@ def test_panel_hides_long_offline_device(qapp, env):
         assert set(panel._cards) == ids
 
         now = time.time()
-        store.prefs.offline_hide_minutes = 10
+        store.prefs.offline_hide_seconds = 600
         snapshots = {}
         for cfg in registry.enabled_devices():
             offline = cfg.id == BUILTIN_ID
