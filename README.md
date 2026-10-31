@@ -359,11 +359,21 @@ run.bat
 .venv\Scripts\pythonw.exe main.py --tray  :: 静默进托盘（开机自启用这个）
 .venv\Scripts\python.exe main.py --demo   :: 演示数据，先看界面
 
-:: 3) 打包成 exe
+:: 3) 打包成 exe（产物名 = 中文名 + 英文名 + 版本号）
 .venv\Scripts\python.exe -m pip install pyinstaller
-.venv\Scripts\python.exe tools\build_exe.py            :: 单文件 dist\PowerHub.exe
+.venv\Scripts\python.exe tools\build_exe.py            :: 单文件 dist\电量中枢_PowerHub_v1.4.0.exe
 .venv\Scripts\python.exe tools\build_exe.py --onedir   :: 目录版，冷启动更快
 ```
+
+**版本与产物规则**
+
+- 版本号在 `app/core/paths.py` 的 `APP_VERSION`；改动前先升版本号再打包：
+  修 bug 升末位（1.4.0 → 1.4.1），加功能升中位，不兼容改动升首位。
+- 产物文件名固定为 `电量中枢_PowerHub_v<版本>.exe`，不同版本互不覆盖。
+- **旧版本产物一律保留**，是否删除由使用者自己决定。
+- 设备协议的修复靠 `app/config/devices.json` 的 `version` 触达老用户：
+  该值一变，用户层里内置设备的副本会自动刷新 protocol 段（保留显示名等自定义），
+  所以**改动内置协议时必须同步升 `version`**。
 
 ---
 

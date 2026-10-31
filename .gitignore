@@ -6,12 +6,14 @@ __pycache__/
 
 # ---- 打包产物 ----
 build/
+build_out/
 dist/
 *.spec
 
 # ---- 测试与工具本地状态 ----
 .workbuddy/
 .pytest_cache/
+.pytest-tmp/
 
 # ---- 截图临时文件（正式预览图 preview/*.png 需要入库）----
 preview/tmp_*
