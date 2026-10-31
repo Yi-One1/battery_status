@@ -1,4 +1,4 @@
-"""设备电量显示 · 入口。
+"""电量中枢 · 入口。
 
 用法：
     python main.py            # 启动并弹出面板
@@ -19,12 +19,12 @@ from PySide6.QtWidgets import QApplication
 
 from app.core.config import DeviceRegistry, SettingsStore
 from app.core.monitor import Monitor
-from app.core.paths import APP_DISPLAY_NAME, log_path, resource_root
+from app.core.paths import APP_DISPLAY_NAME, APP_EN_NAME, log_path, resource_root
 from app.ui import theme
 from app.ui.panel import Panel
 from app.ui.tray import TrayController, battery_icon
 
-SINGLE_INSTANCE_KEY = "PeripheralBatteryPanel"
+SINGLE_INSTANCE_KEY = "PowerHubPanel"
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -71,7 +71,7 @@ def main() -> int:
     log.info("==== %s 启动 ====", APP_DISPLAY_NAME)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("PeripheralBattery")
+    app.setApplicationName(APP_EN_NAME)
     app.setApplicationDisplayName(APP_DISPLAY_NAME)
     app.setQuitOnLastWindowClosed(False)
     app.setFont(theme.font(12))
@@ -126,7 +126,7 @@ def main() -> int:
 
     start_hidden = args.tray or (store.prefs.start_minimized and store.prefs.autostart)
     if start_hidden:
-        QTimer.singleShot(300, lambda: tray.notify("设备电量显示已在托盘运行", "左键单击托盘图标即可查看各设备电量。"))
+        QTimer.singleShot(300, lambda: tray.notify(f"{APP_DISPLAY_NAME}已在托盘运行", "左键单击托盘图标即可查看各设备电量。"))
     else:
         QTimer.singleShot(120, panel.show_panel)
 

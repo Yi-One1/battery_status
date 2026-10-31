@@ -23,7 +23,7 @@ from ..core.config import BACKGROUND_LIVE_GLASS, BACKGROUND_WHITE, DeviceRegistr
 from ..core.discovery import build_device_config
 from ..core.model import Snapshot
 from ..core.monitor import Monitor
-from ..core.paths import resource_root
+from ..core.paths import APP_DISPLAY_NAME, resource_root
 from ..core.presence import filter_visible, hidden_devices, ordered_devices
 from . import theme
 from .backdrop import capture_screen
@@ -119,7 +119,7 @@ class Panel(QWidget):
     # ------------------------------------------------------------------ 构建
     def _build(self) -> None:
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setWindowTitle("设备电量显示")
+        self.setWindowTitle(APP_DISPLAY_NAME)
         icon_path = resource_root() / "app" / "assets" / "app.ico"
         if icon_path.exists():
             from PySide6.QtGui import QIcon

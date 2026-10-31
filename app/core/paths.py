@@ -5,8 +5,11 @@ import os
 import sys
 from pathlib import Path
 
+# APP_NAME 是历史配置目录名（%APPDATA%\BatteryGlass），保持原样以免丢失用户
+# 已有的设备清单与偏好；对外展示名请使用 APP_DISPLAY_NAME / APP_EN_NAME。
 APP_NAME = "BatteryGlass"
-APP_DISPLAY_NAME = "设备电量显示"
+APP_DISPLAY_NAME = "电量中枢"
+APP_EN_NAME = "PowerHub"
 
 
 def is_frozen() -> bool:
