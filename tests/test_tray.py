@@ -370,3 +370,101 @@ def test_tray_all_hidden_falls_back_to_placeholder(qapp, tmp_path, monkeypatch):
     assert len(tray._icons) == 1
     assert tray._icons[0].tooltips[-1] == "电量中枢 · 未检测到设备"
     assert tray._icon_ids == []
+
+
+# --------------------------------------------------------------------------- #
+# 图标排版：数字更大更满，充电不挤数字
+# --------------------------------------------------------------------------- #
+def _capture_text_rects(monkeypatch) -> list:
+    """记录 drawText 的 (矩形, 字号, 文本)，用来验证数字没被压缩/移位。"""
+    captured: list = []
+    original = QPainter.drawText
+
+    def fake_drawText(painter, *args):
+        if len(args) == 3 and isinstance(args[2], str):
+            captured.append((args[0], painter.font().pixelSize(), args[2]))
+        return original(painter, *args)
+
+    monkeypatch.setattr(QPainter, "drawText", fake_drawText)
+    return captured
+
+
+def test_digits_fill_the_badge(monkeypatch):
+    """数字矩形就是整块徽标，旧版四周留白被吃掉。"""
+    from app.ui.tray import BADGE_INSET
+
+    rects = _capture_text_rects(monkeypatch)
+    _paint_icon((88, "#0A84FF", False, True, False))
+    assert rects
+    rect, font_size, text = rects[-1]
+    assert text == "88"
+    assert rect.topLeft().x() == pytest.approx(BADGE_INSET * 2, abs=0.01)      # 32px 画布 → scale 2
+    assert rect.width() == pytest.approx((16 - 2 * BADGE_INSET) * 2, abs=0.01)
+    assert font_size > 20, "16px 下字号应显著大于旧版 9.4"
+
+
+def test_charging_does_not_shrink_or_shift_digits(monkeypatch):
+    """充电时数字仍占满徽标、字号不变 —— 旧版会缩小并上移。"""
+    rects = _capture_text_rects(monkeypatch)
+    _paint_icon((88, "#0A84FF", True, True, False))
+    charging_rect, charging_font, _ = rects[-1]
+    rects.clear()
+    _paint_icon((88, "#0A84FF", False, True, False))
+    idle_rect, idle_font, _ = rects[-1]
+
+    assert charging_font == idle_font
+    assert charging_rect == idle_rect
+
+
+def test_three_digit_level_uses_compact_font(monkeypatch):
+    rects = _capture_text_rects(monkeypatch)
+    _paint_icon((100, "#0A84FF", False, True, False))
+    big_text = rects[-1]
+    rects.clear()
+    _paint_icon((88, "#0A84FF", False, True, False))
+    small_text = rects[-1]
+
+    assert big_text[2] == "100"
+    assert big_text[1] < small_text[1], "三位数要收字号，否则会溢出徽标"
+
+
+def test_charging_dot_sits_in_bottom_right_corner(qapp):
+    """充电标记是右下角的小绿点，不再占用数字下方的空间。"""
+    from app.ui.tray import battery_icon
+
+    healthy = battery_icon(88, "#0A84FF", charging=False, show_percent=True).pixmap(48, 48).toImage()
+    charging = battery_icon(88, "#0A84FF", charging=True, show_percent=True).pixmap(48, 48).toImage()
+
+    def green_pixels(image) -> int:
+        count = 0
+        for y in range(image.height()):
+            for x in range(image.width()):
+                c = image.pixelColor(x, y)
+                if c.alpha() > 80 and c.green() > c.red() + 40 and c.green() > c.blue() + 40:
+                    count += 1
+        return count
+
+    assert green_pixels(healthy) < 5, "未充电时不该有绿色标记"
+    assert green_pixels(charging) > 20, "充电时右下角应出现绿色角标"
+
+    # 角标落在右下角：绿点像素的重心应明显偏右下
+    xs, ys = [], []
+    for y in range(charging.height()):
+        for x in range(charging.width()):
+            c = charging.pixelColor(x, y)
+            if c.alpha() > 80 and c.green() > c.red() + 40 and c.green() > c.blue() + 40:
+                xs.append(x)
+                ys.append(y)
+    assert sum(xs) / len(xs) > charging.width() * 0.65
+    assert sum(ys) / len(ys) > charging.height() * 0.65
+
+
+def test_badge_almost_fills_canvas(qapp):
+    """徽标几乎占满画布：边缘一像素内是底色，四角外侧仍透明。"""
+    from app.ui.tray import BADGE_INSET, battery_icon
+
+    image = battery_icon(88, "#0A84FF", charging=False, show_percent=True).pixmap(64, 64).toImage()
+    edge = int(BADGE_INSET * 64) + 2
+    assert image.pixelColor(edge, 32).alpha() > 200, "左侧边缘应有底色"
+    assert image.pixelColor(64 - edge, 32).alpha() > 200, "右侧边缘应有底色"
+    assert image.pixelColor(0, 0).alpha() == 0, "画布四角应留白"

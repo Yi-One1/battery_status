@@ -36,6 +36,15 @@ CREATE_INTERVAL_MS = 70
 FG_LIGHT = QColor(255, 255, 255)
 FG_DARK = QColor(theme.TEXT_PRIMARY)
 
+# 图标几何：数字模式是一整块圆角徽标，尽量占满 16px 画布（留 0.5 抗锯齿余量）。
+# 16px 是任务栏最常见的实际尺寸，字号/留白都是按它调的：
+# 旧版数字只有 9.4px 且四周留白大，缩到任务栏里就糊成一团。
+BADGE_INSET = 0.5
+BADGE_RADIUS = 4.6
+PERCENT_FONT = 11.6          # 两位数
+PERCENT_FONT_COMPACT = 9.0   # 三位数（100）收字号，否则会顶到徽标边缘
+CHARGE_DOT_RADIUS = 2.4
+
 
 def relative_luminance(color: QColor) -> float:
     """WCAG 相对亮度（0 = 全黑，1 = 全白）。"""
@@ -65,6 +74,28 @@ def _bolt(center: QPointF, size: float) -> QPainterPath:
     return path
 
 
+def _badge_rect(scale: float) -> QRectF:
+    """数字模式的圆角徽标：几乎占满整个画布。"""
+    side = 16.0 - 2 * BADGE_INSET
+    return QRectF(BADGE_INSET * scale, BADGE_INSET * scale, side * scale, side * scale)
+
+
+def _draw_charge_dot(painter: QPainter, scale: float) -> None:
+    """充电标记：右下角的小绿点。
+
+    旧做法是把数字上移、在底部画闪电，16px 下两者互相挤，数字被迫缩小。
+    改成角标后数字保持完整字号、位置不变。
+    """
+    radius = CHARGE_DOT_RADIUS * scale
+    center = (16.0 - BADGE_INSET) * scale - radius
+    green = QColor(theme.OK)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(green)
+    painter.drawEllipse(QPointF(center, center), radius, radius)
+    painter.setBrush(foreground_on(green))
+    painter.drawPath(_bolt(QPointF(center, center), radius * 1.9))
+
+
 def _draw_icon(painter: QPainter, size: int, level: Optional[int], color: str, charging: bool, show_percent: bool, offline: bool) -> None:
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     # 电量告急时整枚图标转红，16px 下靠颜色比靠像素更容易被注意到
@@ -73,44 +104,39 @@ def _draw_icon(painter: QPainter, size: int, level: Optional[int], color: str, c
     ratio = 0.0 if level is None else max(0.0, min(100, level)) / 100.0
 
     scale = size / 16.0
-    margin = 1.0 * scale
-    body = QRectF(margin, 3.6 * scale, 11.2 * scale, 8.8 * scale)
-    nub = QRectF(body.right() + 0.4 * scale, body.top() + 2.4 * scale, 1.5 * scale, 4.0 * scale)
-    radius = 2.4 * scale
+    badge = _badge_rect(scale)
+    badge_radius = BADGE_RADIUS * scale
 
-    if show_percent:
-        if level is None and charging:
-            # 充电占位符（电量不可读）：整块绿色 + 闪电，与主界面"充电中"一致
-            solid = QColor(theme.OK)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(solid)
-            painter.drawRoundedRect(QRectF(0.6 * scale, 0.6 * scale, 14.8 * scale, 14.8 * scale), 4.2 * scale, 4.2 * scale)
-            painter.setBrush(foreground_on(solid))
-            painter.drawPath(_bolt(QPointF(8.0 * scale, 8.2 * scale), 8.6 * scale))
-            return
-        if level is not None:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(base)
-            painter.drawRoundedRect(QRectF(0.6 * scale, 0.6 * scale, 14.8 * scale, 14.8 * scale), 4.2 * scale, 4.2 * scale)
-            # 数字跟着底色走：浅色设备色配深字，深色配白字
-            painter.setPen(foreground_on(base))
-            # 只画数值，不带 % 符号；充电时数值上移，底部让位给绿色闪电
-            text_rect = QRectF(
-                0.6 * scale,
-                (0.2 if charging else 0.4) * scale,
-                14.8 * scale,
-                (11.2 if charging else 14.6) * scale,
-            )
-            painter.setFont(theme.font(9.4 * scale, 700))
-            painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignCenter), str(min(100, int(level))))
-            if charging:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(theme.OK))
-                painter.drawPath(_bolt(QPointF(8.0 * scale, 13.0 * scale), 4.8 * scale))
-            return
-        # 电量未知且未充电：回落到电池外壳画法
+    if show_percent and level is not None:
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(base)
+        painter.drawRoundedRect(badge, badge_radius, badge_radius)
+        # 数字跟着底色走：浅色设备色配深字，深色配白字；不带 % 符号
+        painter.setPen(foreground_on(base))
+        text = str(min(100, int(level)))
+        font_size = PERCENT_FONT if len(text) < 3 else PERCENT_FONT_COMPACT
+        painter.setFont(theme.font(font_size * scale, 700))
+        painter.drawText(badge, int(Qt.AlignmentFlag.AlignCenter), text)
+        if charging:
+            _draw_charge_dot(painter, scale)
+        return
 
-    # 电池外壳
+    if show_percent and charging:
+        # 充电占位符（电量不可读）：整块绿色 + 闪电，与主界面"充电中"一致
+        solid = QColor(theme.OK)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(solid)
+        painter.drawRoundedRect(badge, badge_radius, badge_radius)
+        painter.setBrush(foreground_on(solid))
+        painter.drawPath(_bolt(QPointF(8.0 * scale, 8.2 * scale), 9.4 * scale))
+        return
+
+    # 电量未知且未充电 / 未开启数字模式：回落到电池外壳画法
+    margin = 0.9 * scale
+    body = QRectF(margin, 3.5 * scale, 11.4 * scale, 9.0 * scale)
+    nub = QRectF(body.right() + 0.4 * scale, body.top() + 2.4 * scale, 1.6 * scale, 4.2 * scale)
+    radius = 2.6 * scale
+
     painter.setPen(Qt.PenStyle.NoPen)
     dim = QColor(base)
     dim.setAlphaF(0.22)
