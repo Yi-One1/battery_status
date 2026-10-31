@@ -24,6 +24,23 @@ def qapp():
     yield app
 
 
+@pytest.fixture(scope="session", autouse=True)
+def isolate_user_config(tmp_path_factory):
+    """把所有「默认用户目录」指向临时目录，避免测试写坏真实用户配置。
+
+    设备配置的协议段会在加载时按内置版本刷新并落盘，若测试直接用
+    ``DeviceRegistry()``（user_dir 默认取 ``%APPDATA%\\BatteryGlass``），
+    就会改到用户本机的 devices.json 与 preferences.json。
+    """
+    import app.core.config as config_module
+
+    sandbox = tmp_path_factory.mktemp("user_config")
+    original = config_module.user_data_dir
+    config_module.user_data_dir = lambda: sandbox
+    yield sandbox
+    config_module.user_data_dir = original
+
+
 def ink_points(image: QImage, threshold: int = 60) -> list[tuple[float, float]]:
     """返回所有"有墨迹"像素的中心坐标（以图像左上角为原点）。"""
     canvas = image.convertToFormat(QImage.Format.Format_RGBA8888)

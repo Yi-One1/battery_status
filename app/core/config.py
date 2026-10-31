@@ -6,7 +6,9 @@
    随程序升级一起更新，是"出厂默认"。用户不该直接改它。
 2. **用户层** ``%APPDATA%/BatteryGlass/devices.json``
    程序写入。里面有三样东西：
-   * ``devices`` —— 用户新增的设备（``source`` = user / auto）
+   * ``devices`` —— 用户新增的设备（``source`` = user / auto），以及被用户改过
+     的内置设备整份快照（``source`` = builtin，带 ``based_on`` 记录快照对应的
+     内置 ``version``）
    * ``removed`` —— 墓碑列表。删掉一台内置设备后，它的 id 记在这里，
      否则下次启动重新读内置模板又会把它变回来。
    * ``types``   —— 设备类型的外观覆盖（颜色/样式）
@@ -128,6 +130,7 @@ class DeviceRegistry:
         self._user_raw: dict[str, dict[str, Any]] = {}
         self._user_types: dict[str, Any] = {}
         self._removed: list[str] = []
+        self._protocol_refreshed = False
         self.reload()
 
     @property
@@ -149,6 +152,7 @@ class DeviceRegistry:
         self._user_raw = {}
         self._user_types = {}
         self._removed = []
+        self._protocol_refreshed = False
         path = self.user_config_path
         if path.exists():
             extra = self._read_json(path)
@@ -161,6 +165,9 @@ class DeviceRegistry:
                 device_id = str(raw["id"])
                 self._user_raw[device_id] = {**raw, "source": str(raw.get("source") or SOURCE_USER)}
         self._rebuild()
+        if self._protocol_refreshed:
+            # 协议段已按最新内置配置刷新，落盘写回 based_on，避免每次启动重复刷新
+            self.save_user_config()
 
     def _rebuild(self) -> None:
         """把「内置 + 用户 - 墓碑」合成为运行时视图，不碰磁盘。"""
@@ -181,6 +188,7 @@ class DeviceRegistry:
 
         removed = set(self._removed)
         merged_devices: dict[str, DeviceConfig] = {}
+        refreshed: dict[str, dict[str, Any]] = {}
         for cfg in self._bundled_devices:
             if cfg.id in removed:
                 continue
@@ -193,11 +201,47 @@ class DeviceRegistry:
             bundled = next((d for d in self._bundled_devices if d.id == device_id), None)
             if bundled and str(raw.get("source") or SOURCE_USER) == SOURCE_BUILTIN:
                 raw = self._merge_device_raw(bundled.to_raw(), raw)
+                raw, did_refresh = self._refresh_protocol(bundled, raw, device_id)
+                if did_refresh:
+                    refreshed[device_id] = raw
             cfg = self._parse_device(raw, default_source=SOURCE_USER)
             if cfg is None:
                 continue
             merged_devices[device_id] = cfg
+        if refreshed:
+            self._user_raw.update(refreshed)
         self.devices = list(merged_devices.values())
+
+    def _refresh_protocol(
+        self,
+        bundled: DeviceConfig,
+        raw: dict[str, Any],
+        device_id: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """内置版本变了就整体刷新用户副本的 protocol 段。
+
+        用户副本是「整份快照」，而深合并只覆盖不删键：内置删掉的键
+        （例如曾经误配的 ``charging_invert``）会永远留在用户层，把后续协议
+        修复重新盖回去。所以 protocol 不参与用户覆盖，只按内置走。
+
+        只在 ``based_on`` 与当前内置 ``version`` 不一致时刷新（用户改过的
+        显示名、备注、启用状态等一律保留），刷新后写回 based_on。
+        """
+        based_on = str(raw.get("based_on") or "")
+        if based_on == self.version:
+            return raw, False
+        updated = copy.deepcopy(raw)
+        updated["protocol"] = copy.deepcopy(bundled.protocol)
+        updated["based_on"] = self.version
+        log.info(
+            "内置配置 %s → %s，刷新设备 %s 的协议段（用户副本 based_on=%s）",
+            based_on or "未知",
+            self.version,
+            device_id,
+            based_on or "缺失",
+        )
+        self._protocol_refreshed = True
+        return updated, True
 
     @staticmethod
     def _merge_device_raw(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -367,7 +411,7 @@ class DeviceRegistry:
         if cfg is None:
             return False
         cfg.enabled = bool(enabled)
-        self._user_raw[device_id] = cfg.to_raw()
+        self._user_raw[device_id] = self._stamp_based_on(device_id, cfg.to_raw())
         self._rebuild()
         if persist:
             self.save_user_config()
@@ -383,12 +427,18 @@ class DeviceRegistry:
             return False
         raw = cfg.to_raw()
         raw["display_name"] = name
-        self._user_raw[device_id] = raw
+        self._user_raw[device_id] = self._stamp_based_on(device_id, raw)
         self._rebuild()
         if persist:
             self.save_user_config()
         log.info("重命名设备 %s -> %s", device_id, name)
         return True
+
+    def _stamp_based_on(self, device_id: str, raw: dict[str, Any]) -> dict[str, Any]:
+        """给内置设备的用户副本打「基于哪个内置版本」的戳，供协议段刷新判断。"""
+        if self.is_builtin(device_id) and str(raw.get("source") or "") == SOURCE_BUILTIN:
+            raw["based_on"] = self.version
+        return raw
 
     def save_user_config(self) -> bool:
         payload = {
