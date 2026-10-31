@@ -11,7 +11,10 @@ from .paths import executable_command
 log = logging.getLogger(__name__)
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-VALUE_NAME = "PeripheralBattery"
+VALUE_NAME = "PowerHub"
+# 改名前的旧值名：老用户注册表里还留着它，读到就视为「已开启」，
+# 下次写入时顺手迁移到 VALUE_NAME 并删掉旧值，避免新旧两条同时自启。
+LEGACY_VALUE_NAMES = ("PeripheralBattery",)
 
 
 def _command_line() -> str:
@@ -26,8 +29,14 @@ def is_enabled() -> bool:
         return False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ) as key:
-            value, _ = winreg.QueryValueEx(key, VALUE_NAME)
-            return bool(value)
+            for name in (VALUE_NAME, *LEGACY_VALUE_NAMES):
+                try:
+                    value, _ = winreg.QueryValueEx(key, name)
+                except FileNotFoundError:
+                    continue
+                if value:
+                    return True
+            return False
     except FileNotFoundError:
         return False
     except OSError as exc:
@@ -45,16 +54,30 @@ def apply(enabled: bool) -> bool:
             if enabled:
                 winreg.SetValueEx(key, VALUE_NAME, 0, winreg.REG_SZ, _command_line())
                 log.info("已开启开机自启：%s", _command_line())
+                _drop_legacy(key, winreg)
             else:
-                try:
-                    winreg.DeleteValue(key, VALUE_NAME)
-                    log.info("已关闭开机自启")
-                except FileNotFoundError:
-                    pass
+                for name in (VALUE_NAME, *LEGACY_VALUE_NAMES):
+                    try:
+                        winreg.DeleteValue(key, name)
+                    except FileNotFoundError:
+                        pass
+                log.info("已关闭开机自启")
         return True
     except OSError as exc:
         log.error("写自启动注册表失败：%s", exc)
         return False
+
+
+def _drop_legacy(key, winreg) -> None:
+    """删掉改名前的旧自启值，避免新旧两条同时存在。"""
+    for name in LEGACY_VALUE_NAMES:
+        try:
+            winreg.DeleteValue(key, name)
+            log.info("已移除旧自启项：%s", name)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.debug("移除旧自启项 %s 失败：%s", name, exc)
 
 
 def open_task_manager_startup() -> None:
