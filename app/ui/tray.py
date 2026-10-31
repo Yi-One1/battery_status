@@ -26,6 +26,27 @@ ICON_SIZES = (16, 18, 20, 24, 32, 40, 48, 64)
 # 让资源管理器彻底释放旧槽位；测试里会被改成 0。
 SWAP_DELAY_MS = 250
 
+# 图标上的前景色（数字 / 闪电）在深底与浅底各用一套。
+# 设备颜色是用户自选的，浅到接近白色的配色上画白字等于看不见，
+# 所以按底色的相对亮度自动选，而不是写死白色。
+FG_LIGHT = QColor(255, 255, 255)
+FG_DARK = QColor(theme.TEXT_PRIMARY)
+
+
+def relative_luminance(color: QColor) -> float:
+    """WCAG 相对亮度（0 = 全黑，1 = 全白）。"""
+
+    def channel(value: int) -> float:
+        srgb = value / 255.0
+        return srgb / 12.92 if srgb <= 0.03928 else ((srgb + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * channel(color.red()) + 0.7152 * channel(color.green()) + 0.0722 * channel(color.blue())
+
+
+def foreground_on(background: QColor) -> QColor:
+    """按底色亮度选前景：浅底用深字，深底用白字（阈值 0.5，业界通行口径）。"""
+    return FG_DARK if relative_luminance(background) > 0.5 else FG_LIGHT
+
 
 def _bolt(center: QPointF, size: float) -> QPainterPath:
     path = QPainterPath()
@@ -55,18 +76,20 @@ def _draw_icon(painter: QPainter, size: int, level: Optional[int], color: str, c
 
     if show_percent:
         if level is None and charging:
-            # 充电占位符（电量不可读）：整块绿色 + 白色闪电，与主界面"充电中"一致
+            # 充电占位符（电量不可读）：整块绿色 + 闪电，与主界面"充电中"一致
+            solid = QColor(theme.OK)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(theme.OK))
+            painter.setBrush(solid)
             painter.drawRoundedRect(QRectF(0.6 * scale, 0.6 * scale, 14.8 * scale, 14.8 * scale), 4.2 * scale, 4.2 * scale)
-            painter.setBrush(QColor(255, 255, 255))
+            painter.setBrush(foreground_on(solid))
             painter.drawPath(_bolt(QPointF(8.0 * scale, 8.2 * scale), 8.6 * scale))
             return
         if level is not None:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(base)
             painter.drawRoundedRect(QRectF(0.6 * scale, 0.6 * scale, 14.8 * scale, 14.8 * scale), 4.2 * scale, 4.2 * scale)
-            painter.setPen(QColor(255, 255, 255))
+            # 数字跟着底色走：浅色设备色配深字，深色配白字
+            painter.setPen(foreground_on(base))
             # 只画数值，不带 % 符号；充电时数值上移，底部让位给绿色闪电
             text_rect = QRectF(
                 0.6 * scale,
@@ -114,7 +137,9 @@ def _draw_icon(painter: QPainter, size: int, level: Optional[int], color: str, c
 
     if charging:
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(255, 255, 255, 235))
+        bolt = QColor(foreground_on(base))
+        bolt.setAlpha(235)
+        painter.setBrush(bolt)
         painter.drawPath(_bolt(QPointF(body.center().x(), body.center().y()), 6.4 * scale))
 
 
