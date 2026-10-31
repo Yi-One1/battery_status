@@ -13,6 +13,47 @@ def _settle(qapp, rounds: int = 40) -> None:
     for _ in range(rounds):
         qapp.processEvents()
 
+
+def _install_fake_tray_icons(monkeypatch) -> list:
+    """离屏环境里创建 QSystemTrayIcon 会段错误，用哑元替身记录创建过程。"""
+    from PySide6.QtCore import QObject, Signal as QtSignal
+
+    from app.ui import tray as tray_module
+
+    monkeypatch.setattr(tray_module, "SWAP_DELAY_MS", 0)
+    monkeypatch.setattr(tray_module, "CREATE_INTERVAL_MS", 0)
+    created: list = []
+
+    class _FakeTrayIcon(QObject):
+        activated = QtSignal(object)
+
+        def __init__(self, parent=None) -> None:
+            super().__init__(parent)
+            self.icons: list = []
+            self.tooltips: list = []
+            created.append(self)
+
+        def setContextMenu(self, menu) -> None:
+            pass
+
+        def show(self) -> None:
+            pass
+
+        def hide(self) -> None:
+            pass
+
+        def deleteLater(self) -> None:
+            pass
+
+        def setIcon(self, icon) -> None:
+            self.icons.append(icon)
+
+        def setToolTip(self, text) -> None:
+            self.tooltips.append(text)
+
+    monkeypatch.setattr(tray_module, "QSystemTrayIcon", _FakeTrayIcon)
+    return created
+
 def _cfg(device_id: str) -> DeviceConfig:
     return DeviceConfig(id=device_id, type="mouse", display_name=device_id)
 
@@ -209,3 +250,70 @@ def test_tray_icon_order_matches_panel_order(qapp, tmp_path, monkeypatch):
     _settle(qapp)
     assert tray._icon_ids == ids
     assert len(created) == created_count + len(ids)
+
+
+# --------------------------------------------------------------------------- #
+# 拖拽排序
+# --------------------------------------------------------------------------- #
+def test_settings_drag_reorder_persists_and_notifies(qapp, tmp_path):
+    """拖拽排序：偏好写入 + 落盘 + 设置页行顺序跟随 + 通知主界面刷新。"""
+    from app.ui.settings import SettingsPane
+
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    pane = SettingsPane(registry, store)
+    notified: list[int] = []
+    pane.devices_changed.connect(lambda: notified.append(1))
+
+    order = list(reversed([d.id for d in registry.enabled_devices()]))
+    pane._on_device_reorder(order)
+
+    assert store.prefs.device_order == order
+    assert SettingsStore(registry, path=tmp_path / "preferences.json").prefs.device_order == order
+    assert list(pane.device_widgets().keys()) == order
+    assert notified == [1]
+
+
+def test_settings_rows_have_drag_handle_and_no_arrows(qapp, tmp_path):
+    """每行左侧有 ⋮⋮ 拖动手柄，原来的上移/下移箭头已经不在。"""
+    from app.ui.drag_sort import DragHandle
+    from app.ui.glass import PillButton
+    from app.ui.settings import SettingsPane
+
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    pane = SettingsPane(registry, store)
+
+    rows = pane.device_widgets()
+    assert rows
+    for row in rows.values():
+        assert row.findChildren(DragHandle), "每行都要有拖动手柄"
+
+    texts = {button.text() for row in rows.values() for button in row.findChildren(PillButton)}
+    assert "↑" not in texts and "↓" not in texts
+
+
+def test_panel_card_drag_reorder_updates_tray(qapp, tmp_path, monkeypatch):
+    """主界面拖拽排序后：偏好落盘 + 托盘图标顺序跟着变。"""
+    from app.core.monitor import Monitor
+    from app.ui import tray as tray_module
+    from app.ui.panel import Panel
+    from app.ui.tray import TrayController
+
+    _install_fake_tray_icons(monkeypatch)
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    monitor = Monitor(registry, store.prefs)
+    tray = TrayController(registry, store)
+    panel = Panel(registry, store, monitor, tray)
+
+    ids = [d.id for d in registry.enabled_devices()]
+    assert len(ids) >= 2
+    order = list(reversed(ids))
+
+    panel._on_card_reorder(order)
+    _settle(qapp)
+
+    assert store.prefs.device_order == order
+    assert [card.device_id for card in panel._cards.values()] == order
+    assert tray._icon_ids == order

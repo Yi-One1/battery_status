@@ -28,6 +28,7 @@ from ..core.presence import filter_visible, hidden_devices, ordered_devices
 from . import theme
 from .backdrop import capture_screen
 from .cards import DeviceCard
+from .drag_sort import DragHandle, ReorderController
 from .glass import GlassSurface, IconButton, apply_shadow, clear_backdrop, paint_glass, set_backdrop
 from .settings import SettingsPane
 from .tray import TrayController
@@ -208,6 +209,14 @@ class Panel(QWidget):
         self.grid.setColumnStretch(0, 1)
         self.grid.setColumnStretch(1, 1)
         self._page = page
+        # 卡片拖拽排序：拖动卡片左上角的 ⋮⋮ 手柄，顺序写回 device_order
+        self._reorder = ReorderController(
+            page,
+            key_of=lambda card: str(getattr(card, "device_id", "") or ""),
+            columns=2,
+            parent=self,
+        )
+        self._reorder.reordered.connect(self._on_card_reorder)
         self._rebuild_cards()
         return page
 
@@ -267,10 +276,27 @@ class Panel(QWidget):
             row, col = divmod(index, 2)
             self.grid.addWidget(card, row, col)
             self._cards[cfg.id] = card
+            handle = DragHandle(card, self._reorder)
+            handle.move(5, 5)
+            handle.raise_()
             snapshot = self._snapshots.get(cfg.id)
             if snapshot:
                 card.apply_snapshot(snapshot, self.store.prefs.low_battery_threshold)
+        if hasattr(self, "_reorder"):
+            self._reorder.set_rows(list(self._cards.values()))
         self._resize_for_rows()
+
+    def _on_card_reorder(self, ids: list) -> None:
+        """主界面拖拽结束：写回顺序，设置页与托盘跟着重排。"""
+        order = [str(item) for item in ids if str(item)]
+        if not order or order == list(self.store.prefs.device_order):
+            return
+        self.store.prefs.device_order = order
+        log.info("主界面拖拽调整顺序：%s", ", ".join(order))
+        self.store.save()
+        self._rebuild_cards()
+        self.settings.refresh_devices()
+        self.tray.update_snapshots(self._snapshots)
 
     def _sync_visibility(self) -> None:
         """断连超时的设备该收起、重新上线的该回来 —— 只有集合真的变了才重建界面。"""

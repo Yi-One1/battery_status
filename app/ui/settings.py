@@ -36,6 +36,7 @@ from ..core.presence import ordered_devices
 from . import theme
 from .add_device import AddDeviceDialog
 from .confirm import ConfirmDialog
+from .drag_sort import DragHandle, ReorderController
 from .glass import ColorSwatch, Divider, PillButton, SegmentedControl, ToggleSwitch
 from .removed_devices import RemovedDevicesDialog
 
@@ -228,6 +229,13 @@ class SettingsPane(QWidget):
         self._device_layout = QVBoxLayout(self._device_holder)
         self._device_layout.setContentsMargins(0, 0, 0, 0)
         self._device_layout.setSpacing(1)
+        # 拖拽排序：按住行首的 ⋮⋮ 手柄拖动，松开即写回 device_order
+        self._reorder = ReorderController(
+            self._device_holder,
+            key_of=lambda row: str(row.property("device_id") or ""),
+            parent=self,
+        )
+        self._reorder.reordered.connect(self._on_device_reorder)
         column.addWidget(self._device_holder)
         self._removed_button = PillButton("已移除设备", tone="neutral", height=22)
         self._removed_button.clicked.connect(self._open_removed_dialog)
@@ -440,19 +448,24 @@ class SettingsPane(QWidget):
                 row = self._device_row(cfg)
                 self._device_layout.addWidget(row)
                 self._device_rows[cfg.id] = row
+            self._reorder.set_rows([self._device_rows[cfg.id] for cfg in devices])
         self._sync_restore_button()
 
     def _device_row(self, cfg: DeviceConfig) -> QWidget:
-        """一台设备两行：上行名称 + 取色 + 移除，下行来源说明 + 样式选择。"""
+        """一台设备两行：上行手柄 + 名称 + 取色 + 移除，下行来源说明 + 样式选择。"""
         holder = QWidget()
         holder.setStyleSheet("background: transparent;")
+        holder.setProperty("device_id", cfg.id)
         outer = QVBoxLayout(holder)
         outer.setContentsMargins(0, 5, 0, 5)
         outer.setSpacing(2)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
-        top.setSpacing(8)
+        top.setSpacing(6)
+
+        handle = DragHandle(holder, self._reorder)
+        top.addWidget(handle, 0, Qt.AlignmentFlag.AlignVCenter)
 
         name_edit = QLineEdit(cfg.display_name)
         name_edit.setFont(theme.font(12.0, 500))
@@ -468,16 +481,7 @@ class SettingsPane(QWidget):
         self._device_swatches[cfg.id] = dot
         top.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        # 上下移：调整主界面/托盘的卡片顺序
-        up = PillButton("↑", tone="neutral", height=20)
-        up.setToolTip(f"把「{cfg.display_name}」往前移一格")
-        up.clicked.connect(lambda _=False, did=cfg.id: self._on_move_device(did, -1))
-        top.addWidget(up, 0, Qt.AlignmentFlag.AlignVCenter)
-        down = PillButton("↓", tone="neutral", height=20)
-        down.setToolTip(f"把「{cfg.display_name}」往后移一格")
-        down.clicked.connect(lambda _=False, did=cfg.id: self._on_move_device(did, +1))
-        top.addWidget(down, 0, Qt.AlignmentFlag.AlignVCenter)
-
+        # 顺序靠拖拽（行首手柄）调整，这里不再放上移/下移箭头
         remove = PillButton("移除", tone="neutral")
         remove.setToolTip(f"从清单里删除「{cfg.display_name}」")
         remove.clicked.connect(lambda _=False, did=cfg.id: self._confirm_remove(did))
@@ -543,8 +547,19 @@ class SettingsPane(QWidget):
         self.store.prefs.tray_hidden_devices = hidden
         self._commit()
 
+    def _on_device_reorder(self, ids: list) -> None:
+        """拖拽结束后写回顺序 —— 主界面卡片与托盘图标都跟着重排。"""
+        order = [str(item) for item in ids if str(item)]
+        if not order or order == list(self.store.prefs.device_order):
+            return
+        self.store.prefs.device_order = order
+        log.info("拖拽调整设备顺序：%s", ", ".join(order))
+        self._commit()
+        self._rebuild_device_rows()
+        self.devices_changed.emit()
+
     def _on_move_device(self, device_id: str, delta: int) -> None:
-        """上移/下移一台设备，写入 device_order 并让主界面与托盘跟着重排。"""
+        """程序化上移/下移一台设备（拖拽之外的备用入口）。"""
         devices = ordered_devices(self.registry.enabled_devices(), self.store.prefs)
         ids = [d.id for d in devices]
         try:
