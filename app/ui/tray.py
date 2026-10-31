@@ -25,6 +25,10 @@ ICON_SIZES = (16, 18, 20, 24, 32, 40, 48, 64)
 # 整组换血间隔：旧图标注销与新图标注册之间留的间隙（毫秒），
 # 让资源管理器彻底释放旧槽位；测试里会被改成 0。
 SWAP_DELAY_MS = 250
+# 逐个注册间隔：Windows 托盘按「注册先后」排槽位，一次性批量注册时到达顺序
+# 并不保证，设备多了就会出现托盘顺序与主界面不一致、重启后又变的情况。
+# 每枚之间留一点间隙，让 shell 按我们给的顺序落位；测试里会被改成 0。
+CREATE_INTERVAL_MS = 70
 
 # 图标上的前景色（数字 / 闪电）在深底与浅底各用一套。
 # 设备颜色是用户自选的，浅到接近白色的配色上画白字等于看不见，
@@ -176,34 +180,37 @@ class TrayController(QObject):
         # 图标对应的设备 id 序列。Windows 按创建（注册）顺序分配托盘槽位，
         # 只换图不重建的话，槽位顺序不会跟随设备重排 —— 所以序列变化必须重建。
         self._icon_ids: list[str] = []
+        # 目标序列：要建成什么样。与 _icon_ids 相同且非重建中即为稳定态。
+        self._target_ids: list[str] = []
         # 整组换血：注销旧图标与新图标注册分两轮（间隔 SWAP_DELAY_MS），
         # 给资源管理器留出释放旧槽位的时间，否则同轮注销+注册的槽位顺序会错乱。
-        self._pending_ids: Optional[list[str]] = None
         self._swap_old_icons: list[QSystemTrayIcon] = []
-        self._queued_renders: Optional[list[tuple[object, str]]] = None
+        self._swap_pending = False
         self._swap_timer = QTimer(self)
         self._swap_timer.setSingleShot(True)
         self._swap_timer.setInterval(SWAP_DELAY_MS)
         self._swap_timer.timeout.connect(self._do_swap)
+        # 逐个注册：见 CREATE_INTERVAL_MS 的说明
+        self._create_queue: list[str] = []
+        self._create_timer = QTimer(self)
+        self._create_timer.setSingleShot(True)
+        self._create_timer.timeout.connect(self._create_next)
+        # 设备 id → (图标, 提示)。按 id 索引而不是按下标，重建中途也能对上号
+        self._renders: dict[str, tuple[object, str]] = {}
         self._snapshots: dict[str, Snapshot] = {}
         self._menu = QMenu()
         self._menu.aboutToShow.connect(self._populate_menu)
         self._menu.setStyleSheet(theme.app_stylesheet())
 
     # -- 图标管理 -----------------------------------------------------------
-    def _ensure_icons(self, count: int, ids: Optional[list[str]] = None) -> None:
-        count = max(1, count)
-        wanted_ids = [str(x) for x in (ids or [])]
-        if self._pending_ids is not None:
-            if self._pending_ids == wanted_ids:
-                return  # 已安排同目标重建，等换血定时器执行
-        elif len(self._icons) == count and self._icon_ids == wanted_ids:
-            return
+    def _ensure_icons(self, ids: Optional[list[str]] = None) -> None:
+        wanted = [str(x) for x in (ids or [])]
 
         if ids is None:
             # 占位图标：单枚、无顺序可言，立即注销全部并直接创建
-            self._pending_ids = None
-            self._queued_renders = None
+            self._swap_pending = False
+            self._create_queue = []
+            self._create_timer.stop()
             self._teardown(self._icons)
             self._teardown(self._swap_old_icons)
             self._swap_old_icons = []
@@ -214,52 +221,64 @@ class TrayController(QObject):
             tray.show()
             self._icons = [tray]
             self._icon_ids = []
+            self._target_ids = []
             return
 
-        if self._pending_ids is None:
-            # 重建开始：旧图标先留着显示（不闪烁），到点整组注销、按新序重建
-            self._swap_old_icons = list(self._icons)
-            self._icons = []
-            self._icon_ids = []
-        # 若重建途中目标序列又变了：只更新目标，待注销列表保持原样
-        self._pending_ids = wanted_ids
+        if self._target_ids == wanted and (self._swap_pending or self._create_queue):
+            return  # 已经朝着同一目标在重建/逐个注册，等定时器走完
+        if self._target_ids == wanted and self._icon_ids == wanted:
+            return  # 稳定态：只换图，不重建
+
+        self._target_ids = wanted
+        if self._swap_pending:
+            return  # 换血已排队，目标序列已在上面更新，到点按新目标建
+        # 重建开始：旧图标先留着显示（不闪烁），到点整组注销、按新序重建
+        self._swap_old_icons = list(self._icons)
+        self._icons = []
+        self._icon_ids = []
+        self._swap_pending = True
         self._swap_timer.start()
 
     def _do_swap(self) -> None:
-        if self._pending_ids is None:
+        if not self._swap_pending:
             return
         self._teardown(self._swap_old_icons)
+        self._teardown(self._icons)
+        self._icons = []
+        self._icon_ids = []
         self._swap_old_icons = []
-        ids = self._pending_ids
-        self._pending_ids = None
-        self._create_icons(ids)
+        self._swap_pending = False
+        self._create_queue = list(self._target_ids)
+        self._create_next()
 
     def _teardown(self, icons: list) -> None:
         for icon in icons:
             icon.hide()
             icon.deleteLater()
 
-    def _create_icons(self, ids: list[str]) -> None:
-        icons: list[QSystemTrayIcon] = []
-        for _ in ids:
-            tray = QSystemTrayIcon(self._menu)
-            tray.setContextMenu(self._menu)
-            tray.activated.connect(self._on_activated)
-            tray.show()
-            icons.append(tray)
-        self._icons = icons
-        self._icon_ids = list(ids)
-        queued = self._queued_renders
-        self._queued_renders = None
-        if queued and len(queued) == len(icons):
-            self._apply_renders(queued)
-
-    def _apply_renders(self, renders: list[tuple[object, str]]) -> None:
-        """把 (图标, 提示) 应用到当前图标组；换血期间先入队，换血完成后补上。"""
-        if self._pending_ids is not None:
-            self._queued_renders = renders
+    def _create_next(self) -> None:
+        """按目标顺序逐枚注册，避免批量注册时 shell 收到顺序不保证。"""
+        if not self._create_queue:
+            self._create_timer.stop()
             return
-        for icon, (qicon, tooltip) in zip(self._icons, renders):
+        device_id = self._create_queue.pop(0)
+        tray = QSystemTrayIcon(self._menu)
+        tray.setContextMenu(self._menu)
+        tray.activated.connect(self._on_activated)
+        tray.show()
+        self._icons.append(tray)
+        self._icon_ids.append(device_id)
+        self._apply_renders()
+        if self._create_queue:
+            self._create_timer.start(max(0, CREATE_INTERVAL_MS))
+
+    def _apply_renders(self) -> None:
+        """把已就绪的图标/提示贴到对应设备的槽位上（按 id 匹配）。"""
+        for icon, device_id in zip(self._icons, self._icon_ids):
+            render = self._renders.get(device_id)
+            if render is None:
+                continue
+            qicon, tooltip = render
             icon.setIcon(qicon)
             icon.setToolTip(tooltip)
 
@@ -274,8 +293,11 @@ class TrayController(QObject):
         prefs = self.store.prefs
         # 断连久了被收起的设备不再占托盘坑位，否则用久了会攒出一排灰电池；
         # 被用户隐藏的设备同样不占坑（仅托盘层面，主界面不受影响）；
-        # 顺序必须与主界面一致：同一套 ordered_devices 排序
-        visible = [d for d in presence.filter_visible(self.registry.enabled_devices(), snapshots, prefs) if d.id in snapshots]
+        # 顺序必须与主界面一致：同一套 ordered_devices 排序。
+        # 刻意「不」按「快照里有没有这台设备」过滤：启动时快照要等首轮扫描才到，
+        # 若此时少建几枚、扫描后再补，Windows 会把新图标排到旧图标后面 ——
+        # 这正是托盘顺序和主界面不一致、每次重启还都不一样的原因。
+        visible = presence.filter_visible(self.registry.enabled_devices(), snapshots, prefs)
         visible = presence.tray_visible_devices(visible, prefs)
         devices = presence.ordered_devices(visible, prefs)
         self._visible = devices
@@ -283,14 +305,23 @@ class TrayController(QObject):
 
         if not devices:
             # 一台可见设备都没有：保留一枚灰色占位图标，应用仍能从托盘打开
-            self._ensure_icons(1)
-            self._apply_renders([(battery_icon(None, theme.ACCENT_BLUE, offline=True), f"{APP_DISPLAY_NAME} · 未检测到设备")])
+            self._renders = {}
+            self._ensure_icons(None)
+            self._icons[0].setIcon(battery_icon(None, theme.ACCENT_BLUE, offline=True))
+            self._icons[0].setToolTip(f"{APP_DISPLAY_NAME} · 未检测到设备")
             return
 
-        renders: list[tuple[object, str]] = []
+        renders: dict[str, tuple[object, str]] = {}
         for cfg in devices:
-            snap = snapshots[cfg.id]
-            renders.append((
+            snap = snapshots.get(cfg.id)
+            if snap is None:
+                # 还没扫到：先占好槽位，避免稍后补建导致顺序漂移
+                renders[cfg.id] = (
+                    battery_icon(None, prefs.color_for_device(cfg), False, show_percent, True),
+                    f"{cfg.display_name}  --  等待首次扫描",
+                )
+                continue
+            renders[cfg.id] = (
                 battery_icon(
                     snap.display_level,
                     prefs.color_for_device(cfg),
@@ -299,10 +330,11 @@ class TrayController(QObject):
                     not snap.online,
                 ),
                 self._device_line(cfg.display_name, snap),
-            ))
+            )
+        self._renders = renders
         # 传入 id 序列：顺序变化时整组换血，让 Windows 槽位跟着主界面重排
-        self._ensure_icons(len(devices), [d.id for d in devices])
-        self._apply_renders(renders)
+        self._ensure_icons([d.id for d in devices])
+        self._apply_renders()
 
     def _device_line(self, name: str, snap: Snapshot) -> str:
         level = "--" if snap.display_level is None else f"{snap.display_level}%"
@@ -322,16 +354,15 @@ class TrayController(QObject):
         prefs = self.store.prefs
         for cfg in getattr(self, "_visible", self.registry.enabled_devices()):
             snap = self._snapshots.get(cfg.id)
-            if snap is None:
-                continue
-            action = QAction(self._device_line(cfg.display_name, snap), self._menu)
+            line = f"{cfg.display_name}  --  等待首次扫描" if snap is None else self._device_line(cfg.display_name, snap)
+            action = QAction(line, self._menu)
             action.setIcon(
                 battery_icon(
-                    snap.display_level,
+                    None if snap is None else snap.display_level,
                     prefs.color_for_device(cfg),
-                    bool(snap.display_charging),
+                    False if snap is None else bool(snap.display_charging),
                     True,
-                    not snap.online,
+                    True if snap is None else not snap.online,
                 )
             )
             action.triggered.connect(self.show_panel.emit)
@@ -370,10 +401,13 @@ class TrayController(QObject):
 
     def shutdown(self) -> None:
         self._swap_timer.stop()
-        self._pending_ids = None
-        self._queued_renders = None
+        self._create_timer.stop()
+        self._swap_pending = False
+        self._create_queue = []
+        self._renders = {}
         self._teardown(self._icons)
         self._teardown(self._swap_old_icons)
         self._icons = []
         self._swap_old_icons = []
         self._icon_ids = []
+        self._target_ids = []

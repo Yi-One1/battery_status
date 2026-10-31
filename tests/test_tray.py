@@ -20,6 +20,7 @@ def _install_fake_tray(monkeypatch) -> list:
     from app.ui import tray as tray_module
 
     monkeypatch.setattr(tray_module, "SWAP_DELAY_MS", 0)
+    monkeypatch.setattr(tray_module, "CREATE_INTERVAL_MS", 0)
 
     created: list = []
 
@@ -52,6 +53,12 @@ def _install_fake_tray(monkeypatch) -> list:
 
     monkeypatch.setattr(tray_module, "QSystemTrayIcon", _FakeTrayIcon)
     return created
+
+
+def _settle(qapp, rounds: int = 40) -> None:
+    """跑完换血 + 逐个注册两轮定时器（测试里间隔都归零）。"""
+    for _ in range(rounds):
+        qapp.processEvents()
 
 
 def _capture_texts(monkeypatch) -> list[str]:
@@ -192,8 +199,12 @@ def test_show_panel_always_lands_on_battery_page(qapp, tmp_path, monkeypatch):
     assert panel.stack.currentWidget() is panel._page
 
 
-def test_tray_placeholder_icon_when_no_devices(qapp, tmp_path, monkeypatch):
-    """没有任何可见设备时保留一枚占位图标，托盘入口不消失。"""
+def test_tray_builds_all_slots_before_first_scan(qapp, tmp_path, monkeypatch):
+    """启动时按主界面顺序一次建齐槽位，首轮扫描回来后只换图、不重建。
+
+    以前先用空快照建 1 枚占位、扫描回来再整组销毁重建 N 枚，
+    Windows 会按注册先后排槽位，于是托盘顺序既跟主界面不一致、每次重启还会变。
+    """
     from app.core.config import DeviceRegistry, SettingsStore
     from app.core.model import Snapshot
     from app.ui.tray import TrayController
@@ -203,20 +214,52 @@ def test_tray_placeholder_icon_when_no_devices(qapp, tmp_path, monkeypatch):
     store = SettingsStore(registry, path=tmp_path / "preferences.json")
     tray = TrayController(registry, store)
 
-    tray.update_snapshots({})
-    qapp.processEvents()  # 延迟重建：注销旧图标后下一轮事件循环才创建新图标
-    assert len(tray._icons) == 1
-    assert tray._icons[0].tooltips[-1] == "电量中枢 · 未检测到设备"
-    assert tray._icon_ids == []
+    ids = [d.id for d in registry.enabled_devices()]
+    assert len(ids) >= 2
 
-    # 设备恢复后占位图标让位给独立图标
-    device_id = registry.enabled_devices()[0].id
-    tray.update_snapshots(
-        {device_id: Snapshot(device_id=device_id, level=80, charging=False, online=True)}
-    )
-    qapp.processEvents()
-    assert len(tray._icons) == 1
-    assert tray._icon_ids == [device_id]
+    tray.update_snapshots({})   # 首轮扫描还没回来
+    _settle(qapp)
+    assert tray._icon_ids == ids, "槽位顺序必须等于主界面顺序"
+    assert all("等待首次扫描" in icon.tooltips[-1] for icon in tray._icons)
+
+    first_icons = list(tray._icons)
+    snapshots = {device_id: Snapshot(device_id=device_id, level=80, online=True) for device_id in ids}
+    tray.update_snapshots(snapshots)
+    _settle(qapp)
+
+    assert list(tray._icons) == first_icons, "扫描回来只换图，不该重建图标"
+    assert tray._icon_ids == ids
+    assert all("80%" in icon.tooltips[-1] for icon in tray._icons)
+
+
+def test_tray_registers_icons_one_by_one(qapp, tmp_path, monkeypatch):
+    """逐个注册：一次只建一枚，避免 shell 收到批量的乱序注册。"""
+    from app.core.config import DeviceRegistry, SettingsStore
+    from app.core.model import Snapshot
+    from app.ui import tray as tray_module
+    from app.ui.tray import TrayController
+
+    _install_fake_tray(monkeypatch)
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    tray = TrayController(registry, store)
+    ids = [d.id for d in registry.enabled_devices()]
+
+    # 把注册间隔拉长，就能看清「一次只建一枚」
+    monkeypatch.setattr(tray_module, "CREATE_INTERVAL_MS", 9999)
+    tray._create_timer.setInterval(9999)
+
+    snapshots = {device_id: Snapshot(device_id=device_id, level=80, online=True) for device_id in ids}
+    tray.update_snapshots(snapshots)
+    qapp.processEvents()        # 换血定时器（0ms）到点：注销旧图标 + 建第一枚
+
+    assert len(tray._icons) == 1, "批量建完就不叫逐个注册了"
+    assert tray._create_queue == ids[1:]
+
+    # 剩下的按顺序补齐
+    for _ in range(len(ids)):
+        tray._create_next()
+    assert tray._icon_ids == ids
 
 
 def test_tray_per_device_independent_icons(qapp, tmp_path, monkeypatch):
@@ -237,7 +280,7 @@ def test_tray_per_device_independent_icons(qapp, tmp_path, monkeypatch):
         for device_id in ids
     }
     tray.update_snapshots(snapshots)
-    qapp.processEvents()
+    _settle(qapp)
 
     assert len(tray._icons) == len(ids)
     assert tray._icon_ids == ids
@@ -265,7 +308,7 @@ def test_tray_hidden_device_gets_no_icon(qapp, tmp_path, monkeypatch):
         for device_id in ids
     }
     tray.update_snapshots(snapshots)
-    qapp.processEvents()
+    _settle(qapp)
 
     assert tray._icon_ids == ids[1:]
     assert ids[0] not in [d.id for d in tray._visible]
@@ -289,7 +332,7 @@ def test_tray_all_hidden_falls_back_to_placeholder(qapp, tmp_path, monkeypatch):
         for device_id in ids
     }
     tray.update_snapshots(snapshots)
-    qapp.processEvents()
+    _settle(qapp)
 
     assert len(tray._icons) == 1
     assert tray._icons[0].tooltips[-1] == "电量中枢 · 未检测到设备"

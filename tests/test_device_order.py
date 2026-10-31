@@ -7,6 +7,12 @@ from app.core.config import DeviceConfig, DeviceRegistry, Preferences, SettingsS
 from app.core.presence import ordered_devices
 
 
+
+def _settle(qapp, rounds: int = 40) -> None:
+    """跑完换血 + 逐个注册两轮定时器（测试里间隔都归零）。"""
+    for _ in range(rounds):
+        qapp.processEvents()
+
 def _cfg(device_id: str) -> DeviceConfig:
     return DeviceConfig(id=device_id, type="mouse", display_name=device_id)
 
@@ -172,6 +178,7 @@ def test_tray_icon_order_matches_panel_order(qapp, tmp_path, monkeypatch):
 
     monkeypatch.setattr(tray_module, "QSystemTrayIcon", _FakeTrayIcon)
     monkeypatch.setattr(tray_module, "SWAP_DELAY_MS", 0)
+    monkeypatch.setattr(tray_module, "CREATE_INTERVAL_MS", 0)
 
     registry = DeviceRegistry(user_dir=tmp_path)
     store = SettingsStore(registry, path=tmp_path / "preferences.json")
@@ -184,7 +191,7 @@ def test_tray_icon_order_matches_panel_order(qapp, tmp_path, monkeypatch):
         for device_id in ids
     }
     tray.update_snapshots(snapshots)
-    qapp.processEvents()  # 延迟重建在下一轮事件循环创建图标
+    _settle(qapp)  # 换血 + 逐个注册两轮定时器
 
     assert [d.id for d in tray._visible] == list(reversed(ids))
     assert len(tray._icons) == len(ids)
@@ -193,12 +200,12 @@ def test_tray_icon_order_matches_panel_order(qapp, tmp_path, monkeypatch):
     # 相同序列再来一轮：图标不重建（槽位稳定，不被轻易打乱）
     created_count = len(created)
     tray.update_snapshots(snapshots)
-    qapp.processEvents()
+    _settle(qapp)
     assert len(created) == created_count
 
     # 设备重排：id 序列变化 → 图标按新顺序重建
     store.prefs.device_order = ids
     tray.update_snapshots(snapshots)
-    qapp.processEvents()
+    _settle(qapp)
     assert tray._icon_ids == ids
     assert len(created) == created_count + len(ids)
