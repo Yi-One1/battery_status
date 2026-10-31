@@ -192,6 +192,7 @@ class TrayController(QObject):
         self._swap_timer.timeout.connect(self._do_swap)
         # 逐个注册：见 CREATE_INTERVAL_MS 的说明
         self._create_queue: list[str] = []
+        self._created: dict[str, QSystemTrayIcon] = {}
         self._create_timer = QTimer(self)
         self._create_timer.setSingleShot(True)
         self._create_timer.timeout.connect(self._create_next)
@@ -222,6 +223,7 @@ class TrayController(QObject):
             self._icons = [tray]
             self._icon_ids = []
             self._target_ids = []
+            self._created = {}
             return
 
         if self._target_ids == wanted and (self._swap_pending or self._create_queue):
@@ -248,7 +250,10 @@ class TrayController(QObject):
         self._icon_ids = []
         self._swap_old_icons = []
         self._swap_pending = False
-        self._create_queue = list(self._target_ids)
+        # 逆向注册：Windows 把新注册的图标插在托盘区最前面，正向注册会得到反序，
+        # 所以这里按显示顺序倒着建，最终落位才是 1,2,3,4。
+        self._created = {}
+        self._create_queue = list(reversed(self._target_ids))
         self._create_next()
 
     def _teardown(self, icons: list) -> None:
@@ -257,7 +262,7 @@ class TrayController(QObject):
             icon.deleteLater()
 
     def _create_next(self) -> None:
-        """按目标顺序逐枚注册，避免批量注册时 shell 收到顺序不保证。"""
+        """逐枚注册（注册顺序见 _do_swap），避免批量注册时 shell 收到顺序不保证。"""
         if not self._create_queue:
             self._create_timer.stop()
             return
@@ -266,8 +271,10 @@ class TrayController(QObject):
         tray.setContextMenu(self._menu)
         tray.activated.connect(self._on_activated)
         tray.show()
-        self._icons.append(tray)
-        self._icon_ids.append(device_id)
+        self._created[device_id] = tray
+        # 内部列表始终按显示顺序排（创建先后不影响它），已建的为空缺留位
+        self._icon_ids = [d for d in self._target_ids if d in self._created]
+        self._icons = [self._created[d] for d in self._icon_ids]
         self._apply_renders()
         if self._create_queue:
             self._create_timer.start(max(0, CREATE_INTERVAL_MS))
@@ -404,6 +411,7 @@ class TrayController(QObject):
         self._create_timer.stop()
         self._swap_pending = False
         self._create_queue = []
+        self._created = {}
         self._renders = {}
         self._teardown(self._icons)
         self._teardown(self._swap_old_icons)

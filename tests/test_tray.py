@@ -254,12 +254,45 @@ def test_tray_registers_icons_one_by_one(qapp, tmp_path, monkeypatch):
     qapp.processEvents()        # 换血定时器（0ms）到点：注销旧图标 + 建第一枚
 
     assert len(tray._icons) == 1, "批量建完就不叫逐个注册了"
-    assert tray._create_queue == ids[1:]
+    assert tray._icon_ids == ids[-1:]
 
-    # 剩下的按顺序补齐
+    # 剩下的按注册顺序补齐
     for _ in range(len(ids)):
         tray._create_next()
     assert tray._icon_ids == ids
+
+
+def test_tray_registers_in_reverse_so_display_order_matches_panel(qapp, tmp_path, monkeypatch):
+    """Windows 把新注册的图标插在最前面，所以要倒着注册，显示出来才是主界面顺序。"""
+    from app.core.config import DeviceRegistry, SettingsStore
+    from app.core.model import Snapshot
+    from app.ui import tray as tray_module
+    from app.ui.tray import TrayController
+
+    created = _install_fake_tray(monkeypatch)
+    registry = DeviceRegistry(user_dir=tmp_path)
+    store = SettingsStore(registry, path=tmp_path / "preferences.json")
+    tray = TrayController(registry, store)
+    ids = [d.id for d in registry.enabled_devices()]
+    assert len(ids) >= 3
+
+    monkeypatch.setattr(tray_module, "CREATE_INTERVAL_MS", 9999)
+    tray._create_timer.setInterval(9999)
+    snapshots = {device_id: Snapshot(device_id=device_id, level=80, online=True) for device_id in ids}
+    tray.update_snapshots(snapshots)
+    qapp.processEvents()
+
+    assert tray._create_queue == list(reversed(ids))[1:], "注册顺序必须是显示顺序的倒序"
+
+    for _ in range(len(ids)):
+        tray._create_next()
+
+    # 注册先后 = ids 的倒序；内部列表仍按显示顺序
+    assert tray._icon_ids == ids
+    assert len(created) == len(ids)
+    first_registered = created[0]
+    assert tray._icons[0] is created[-1], "最后注册的那枚才是显示在最前面的"
+    assert first_registered is created[0]
 
 
 def test_tray_per_device_independent_icons(qapp, tmp_path, monkeypatch):
