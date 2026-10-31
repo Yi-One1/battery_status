@@ -144,23 +144,4 @@ def app_stylesheet() -> str:
         selection-color: {TEXT_PRIMARY};
     }}
     QSpinBox:focus {{ border-color: rgba(10, 132, 255, 0.55); }}
-    QComboBox {{
-        background: rgba(255, 255, 255, 0.86);
-        border: 1px solid rgba(60, 60, 67, 0.12);
-        border-radius: 8px;
-        padding: 3px 8px;
-        color: {TEXT_PRIMARY};
-    }}
-    QComboBox:focus {{ border-color: rgba(10, 132, 255, 0.55); }}
-    QComboBox::drop-down {{ border: none; width: 16px; }}
-    QComboBox QAbstractItemView {{
-        background: rgba(255, 255, 255, 0.98);
-        border: 1px solid rgba(0, 0, 0, 0.08);
-        border-radius: 8px;
-        padding: 4px;
-        color: {TEXT_PRIMARY};
-        selection-background-color: rgba(10, 132, 255, 0.12);
-        selection-color: {TEXT_PRIMARY};
-        outline: none;
-    }}
     """

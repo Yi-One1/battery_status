@@ -12,7 +12,7 @@ APP_DISPLAY_NAME = "电量中枢"
 APP_EN_NAME = "PowerHub"
 # 版本号：跟随每次功能/修复/协议变更递增，并作为打包产物文件名的一部分
 # （电量中枢_PowerHub_v1.4.0.exe）。语义：修 bug +1 末位，加功能 +1 中位，不兼容 +1 首位。
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 
 def is_frozen() -> bool:

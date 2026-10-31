@@ -9,14 +9,15 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QColorDialog,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -42,9 +43,8 @@ log = logging.getLogger(__name__)
 
 STYLE_OPTIONS = [("ring", "环形"), ("bar", "条状"), ("number", "数字")]
 
-# 断连收起的单位与常用档位（值一律是「秒」）
+# 断连收起的单位（值一律是「秒」）
 OFFLINE_UNITS = [("1", "秒"), ("60", "分钟"), ("3600", "小时")]
-OFFLINE_PRESETS = [("300", "5 分钟"), ("600", "10 分钟"), ("1800", "30 分钟"), ("3600", "1 小时")]
 
 SOURCE_LABELS = {"builtin": "内置", "user": "手动添加", "auto": "自动发现"}
 
@@ -85,10 +85,14 @@ class SettingRow(QWidget):
 
 
 class OfflineHidePicker(QWidget):
-    """「断连多久后收起」：数值输入 + 单位切换 + 常用档位。
+    """「断连多久后收起」：数值输入 + 单位选择，一行到底。
 
     内部一律按秒存（1 秒 ~ 1 小时）。回填时刻意挑「能整除的最大单位」，
     不会出现 90 秒被显示成 1.5 分钟这种精度丢失。
+
+    单位不用 QComboBox：它的弹出列表在 Windows 上会先闪一帧黑底
+    （半透明背景的 popup 先于样式生效），换成 QToolButton + QMenu，
+    菜单主题是全应用通用的那套，不会闪。
     """
 
     changed = Signal(int)  # 秒
@@ -96,42 +100,55 @@ class OfflineHidePicker(QWidget):
     def __init__(self, seconds: int, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._seconds = self._clamp(seconds)
+        self._unit_key = "60"
         self._syncing = False
-        self.setFixedWidth(202)
 
         self.spin = QSpinBox()
         self.spin.setRange(1, MAX_OFFLINE_HIDE_SECONDS)
         self.spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # 数值居中，与右侧单位框的文字基线一致，避免一左一右的错位感
+        self.spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spin.setFont(theme.font(12.0, 500))
-        self.spin.setFixedWidth(78)
+        self.spin.setFixedSize(72, 26)
         self.spin.setToolTip("1 秒 ~ 1 小时")
         self.spin.setKeyboardTracking(False)
 
-        self.unit = QComboBox()
+        self.unit_button = QToolButton()
+        self.unit_button.setFont(theme.font(12.0, 500))
+        self.unit_button.setFixedHeight(26)
+        self.unit_button.setMinimumWidth(64)
+        self.unit_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.unit_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.unit_button.setToolTip("选择单位")
+        self.unit_menu = QMenu(self.unit_button)
         for key, label in OFFLINE_UNITS:
-            self.unit.addItem(label, int(key))
-        self.unit.setFont(theme.font(12.0, 500))
-        self.unit.setFixedWidth(58)
+            action = self.unit_menu.addAction(label)
+            action.triggered.connect(lambda _=False, k=key: self._on_unit(k))
+        self.unit_button.setMenu(self.unit_menu)
+        self.unit_button.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: rgba(255, 255, 255, 0.86);
+                border: 1px solid rgba(60, 60, 67, 0.12);
+                border-radius: 8px;
+                padding: 3px 4px 3px 10px;
+                color: {theme.TEXT_PRIMARY};
+            }}
+            QToolButton:hover {{ border-color: rgba(60, 60, 67, 0.22); }}
+            QToolButton:pressed, QToolButton:focus {{ border-color: rgba(10, 132, 255, 0.55); }}
+            QToolButton::menu-indicator {{ subcontrol-position: center right; right: 5px; }}
+            """
+        )
+        self.unit_menu.setStyleSheet(theme.app_stylesheet())
 
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 0)
-        top.setSpacing(6)
-        top.addWidget(self.spin)
-        top.addWidget(self.unit)
-        top.addStretch(1)
-
-        self.presets = SegmentedControl(OFFLINE_PRESETS, height=22)
-
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
-        layout.addLayout(top)
-        layout.addWidget(self.presets)
+        layout.setSpacing(6)
+        layout.addWidget(self.spin)
+        layout.addWidget(self.unit_button)
+        layout.addStretch(0)
 
         self.spin.valueChanged.connect(self._on_spin)
-        self.unit.currentIndexChanged.connect(self._on_unit)
-        self.presets.changed.connect(self._on_preset)
         self._show(self._seconds)
 
     @staticmethod
@@ -143,33 +160,26 @@ class OfflineHidePicker(QWidget):
 
     def _show(self, seconds: int) -> None:
         seconds = self._clamp(seconds)
-        factor, index = 1, 0
-        for i, (key, _) in enumerate(OFFLINE_UNITS):
-            value = int(key)
+        factor, key = 1, OFFLINE_UNITS[0][0]
+        for unit_key, label in OFFLINE_UNITS:
+            value = int(unit_key)
             if seconds % value == 0:
-                factor, index = value, i
+                factor, key = value, unit_key
         self._syncing = True
         self.spin.setValue(max(1, seconds // factor))
-        self.unit.setCurrentIndex(index)
         self._syncing = False
+        self._unit_key = key
+        self.unit_button.setText(dict(OFFLINE_UNITS)[key])
         self._seconds = seconds
-        self.presets.set_value(str(seconds))
 
     def _on_spin(self, value: int) -> None:
         if self._syncing:
             return
-        self._commit(value * int(self.unit.currentData()))
+        self._commit(value * int(self._unit_key))
 
-    def _on_unit(self, index: int) -> None:
-        if self._syncing:
-            return
-        # 换单位只换换算基准，时长本身不变（600 秒 →「分钟」显示 10）
-        self._commit(self.spin.value() * int(self.unit.currentData()))
-
-    def _on_preset(self, key: str) -> None:
-        if self._syncing:
-            return
-        self._commit(int(key))
+    def _on_unit(self, key: str) -> None:
+        # 数值 + 单位是一个整体输入：10 分钟切成「秒」就是 10 秒，超上限按 1 小时收住
+        self._commit(self.spin.value() * int(key))
 
     def _commit(self, seconds: int) -> None:
         seconds = self._clamp(seconds)
